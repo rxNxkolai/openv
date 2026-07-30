@@ -11,6 +11,7 @@ The cameras are the sensor. The agent is the product.
 ## Status
 
 **M0: detection and tracking.** Video in, people detected, stable track IDs out.
+**M1: zones and events.** Named store areas, visit records with dwell, per-zone funnel.
 
 ## Quickstart
 
@@ -35,6 +36,49 @@ Run on a webcam:
 ```bash
 uv run patron track webcam:0 --show
 ```
+
+## Zones and events (M1)
+
+Draw the areas you want numbers for. Click points, `n` to name and close a zone,
+`s` to save.
+
+```bash
+uv run patron zones data/grocery-store.mp4 --out data/store.zones.json
+```
+
+Then track with zones enabled. Every shopper's stay in every zone becomes a visit
+record in SQLite, and the funnel prints at the end.
+
+```bash
+uv run patron track data/grocery-store.mp4 --zones data/store.zones.json --db out/patron.db
+```
+
+Re-read the numbers any time:
+
+```bash
+uv run patron report --db out/patron.db
+uv run patron report --db out/patron.db --all-sessions
+```
+
+### What a visit is
+
+One continuous stay by one shopper in one zone. Enter time, exit time and dwell are
+all derivable from it, so the visit is the durable record.
+
+Two details make the dwell numbers trustworthy:
+
+- **Debounce.** A shopper standing on a zone edge flickers in and out. A visit only
+  opens after `--enter-seconds` continuously inside and only closes after
+  `--exit-seconds` continuously outside, so one shopper at one shelf is one visit,
+  not forty.
+- **Backdating.** Timestamps are rolled back to when the streak actually started,
+  otherwise every dwell reads short by the debounce window.
+
+Shoppers who walk out of frame while inside a zone get their visit closed after
+`--lost-seconds` rather than hanging open and vanishing from the numbers.
+
+Zones may overlap on purpose. An end-cap sits inside an aisle, and a shopper at it
+should count for both.
 
 ### Useful flags
 

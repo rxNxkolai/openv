@@ -54,11 +54,15 @@ membership is always computed on the floor plane.
 
 ## Milestones
 
-- **M0** video in, people detected, stable track IDs out  <- current
-- **M1** zone polygons, `entered` / `dwell` / `exited` events into Postgres
-- **M2** pose, reach / pickup / put-back, the funnel
+- **M0** video in, people detected, stable track IDs out  (done)
+- **M1** zone polygons, visit records with dwell, per-zone funnel  (done, SQLite)
+- **M2** pose, reach / pickup / put-back, the real funnel  <- current
 - **M3** agent over the event store, diagnosis + recommendation + drafted change
 - **M4** live camera end to end
+
+The event store is SQLite for now. The schema is deliberately plain so it ports to
+Postgres unchanged when cross-store aggregation lands. A visit is the durable record,
+not separate enter/exit rows: enter, exit and dwell are all derivable from it.
 
 ## House style
 

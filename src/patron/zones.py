@@ -1,0 +1,95 @@
+"""Store zones: named polygons on the floor plane.
+
+A zone is an area of the store you want numbers for, e.g. "aisle-6-endcap",
+"checkout-queue", "entrance". Membership is tested against a person's foot point,
+never their box center, because a shopper leaning over a shelf has a box center
+that drifts into the neighbouring aisle.
+
+Zones are per-camera and live in a JSON file next to the footage.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+
+@dataclass(frozen=True)
+class Zone:
+    name: str
+    polygon: tuple[tuple[float, float], ...]
+    kind: str = "shelf"
+
+    def __post_init__(self) -> None:
+        if len(self.polygon) < 3:
+            raise ValueError(
+                f"zone {self.name!r} needs at least 3 points, got {len(self.polygon)}"
+            )
+
+    @property
+    def contour(self) -> np.ndarray:
+        """OpenCV contour form: (N, 1, 2) float32."""
+        return np.array(self.polygon, dtype=np.float32).reshape(-1, 1, 2)
+
+    def contains(self, point: tuple[float, float]) -> bool:
+        """True when the point is inside or exactly on the boundary."""
+        return cv2.pointPolygonTest(self.contour, (float(point[0]), float(point[1])), False) >= 0
+
+
+@dataclass(frozen=True)
+class ZoneSet:
+    """The zones for one camera."""
+
+    zones: tuple[Zone, ...]
+
+    def __len__(self) -> int:
+        return len(self.zones)
+
+    def __iter__(self):
+        return iter(self.zones)
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(z.name for z in self.zones)
+
+    def containing(self, point: tuple[float, float]) -> tuple[str, ...]:
+        """Names of every zone containing the point.
+
+        Zones may overlap on purpose: an end-cap sits inside an aisle, and a
+        shopper standing at it should count for both.
+        """
+        return tuple(z.name for z in self.zones if z.contains(point))
+
+    @classmethod
+    def load(cls, path: str | Path) -> ZoneSet:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        zones = tuple(
+            Zone(
+                name=z["name"],
+                polygon=tuple((float(x), float(y)) for x, y in z["polygon"]),
+                kind=z.get("kind", "shelf"),
+            )
+            for z in raw["zones"]
+        )
+        names = [z.name for z in zones]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate zone names in {path}: {sorted(duplicates)}")
+        return cls(zones=zones)
+
+    def save(self, path: str | Path) -> None:
+        payload = {
+            "zones": [
+                {
+                    "name": z.name,
+                    "kind": z.kind,
+                    "polygon": [[x, y] for x, y in z.polygon],
+                }
+                for z in self.zones
+            ]
+        }
+        Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")

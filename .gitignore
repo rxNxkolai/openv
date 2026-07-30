@@ -25,3 +25,6 @@ out/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local tooling caches
+.impeccable/
