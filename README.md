@@ -12,6 +12,7 @@ The cameras are the sensor. The agent is the product.
 
 **M0: detection and tracking.** Video in, people detected, stable track IDs out.
 **M1: zones and events.** Named store areas, visit records with dwell, per-zone funnel.
+**M2: reach detection.** Pose estimation, hands entering shelf zones, engagement vs presence.
 
 ## Quickstart
 
@@ -116,6 +117,43 @@ Shoppers who walk out of frame while inside a zone get their visit closed after
 
 Zones may overlap on purpose. An end-cap sits inside an aisle, and a shopper at it
 should count for both.
+
+## Reaches (M2)
+
+A visit says a shopper stood there. A **reach** says they engaged. That is the
+difference between dwell and an actual funnel.
+
+Zone `kind` picks which body point is tested:
+
+| kind | tested against | produces |
+|---|---|---|
+| `shelf` | wrists | reaches |
+| anything else | foot point | visits |
+
+Draw a `shelf` zone over the shelf face, then run with pose on:
+
+```bash
+uv run patron track data/my-store.mp4 --zones data/my.zones.json --db out/patron.db --pose
+```
+
+Pose costs roughly 14ms per person per frame and is off by default.
+
+### The false-reach problem
+
+A shelf zone is a flat polygon in image space, so **it cannot tell a hand at the
+shelf face from a hand merely between the camera and the shelf.** A shopper pushing
+a trolley down the aisle has both hands inside the shelf polygon from the camera's
+point of view, and counting that as engagement would fill the funnel with people
+who never touched anything.
+
+The fix is arm extension: wrist-to-shoulder distance measured in units of the
+shopper's own shoulder width, so it holds regardless of how far away they are. A
+resting hand sits near the body; a reach extends. `--min-arm-extension` tunes it,
+default 1.6, and 0 disables the check.
+
+Measured: on a clip where the shopper only ever pushed a trolley, this took the
+count from 2 reaches to 0. True-positive validation on real footage is still
+outstanding and needs a clip of someone actually reaching into a shelf.
 
 ### Useful flags
 

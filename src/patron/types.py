@@ -6,7 +6,8 @@ nothing else. Detector-specific and tracker-specific shapes stop here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,30 @@ class TrackedPerson:
     confidence: float
 
 
+WRISTS = ("left_wrist", "right_wrist")
+
+
+@dataclass(frozen=True)
+class Pose:
+    """Upper-body joints for one person, in full-frame pixel coordinates.
+
+    Only the joints reach detection needs. A full skeleton would be collecting
+    more of a shopper's body than the product uses. See CLAUDE.md constraint 2.
+    """
+
+    points: Mapping[str, tuple[float, float, float]] = field(default_factory=dict)
+
+    def get(self, name: str, min_confidence: float = 0.5) -> tuple[float, float] | None:
+        point = self.points.get(name)
+        if point is None or point[2] < min_confidence:
+            return None
+        return (point[0], point[1])
+
+    def wrists(self, min_confidence: float = 0.5) -> tuple[tuple[float, float], ...]:
+        found = (self.get(name, min_confidence) for name in WRISTS)
+        return tuple(p for p in found if p is not None)
+
+
 @dataclass(frozen=True)
 class FrameResult:
     """The per-frame output of the pipeline."""
@@ -61,6 +86,7 @@ class FrameResult:
     frame_index: int
     timestamp_s: float
     people: tuple[TrackedPerson, ...]
+    poses: Mapping[int, Pose] = field(default_factory=dict)
 
     @property
     def count(self) -> int:

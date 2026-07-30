@@ -13,6 +13,7 @@ dependencies = [
     "trackers>=2.5.0.post0",
     "fastapi>=0.141.1",
     "uvicorn>=0.52.0",
+    "mediapipe>=1.0.0",
 ]
 
 [project.scripts]

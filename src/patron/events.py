@@ -1,32 +1,38 @@
-"""Zone visits: the event layer.
+"""Zone spans: the event layer.
 
-Turns the per-frame `FrameResult` stream into durable visit records, one row per
-(shopper, zone) stay. Enter time, exit time and dwell are all derivable from a
-visit, so a visit is the thing worth storing.
+Turns the per-frame `FrameResult` stream into durable records. A span is one
+continuous stay of one body point inside one zone, so enter time, exit time and
+dwell are all derivable from it, and a span is the thing worth storing.
 
-Two details that decide whether the numbers are trustworthy:
+Two kinds of span, same machinery, different body point:
 
-*Hysteresis.* A shopper standing on a zone boundary flickers in and out every few
-frames. Naively that produces dozens of one-frame visits and a meaningless dwell
-distribution. A visit only opens after `min_frames_inside` consecutive frames
+- a **visit** is a shopper's foot point inside a floor zone
+- a **reach** is a shopper's wrist inside a shelf zone
+
+Two details decide whether the numbers are trustworthy, and they apply to both:
+
+*Hysteresis.* A point sitting on a zone boundary flickers in and out every few
+frames. Naively that produces dozens of one-frame spans and a meaningless dwell
+distribution. A span only opens after `min_frames_inside` consecutive frames
 inside, and only closes after `min_frames_outside` consecutive frames outside.
 
-*Backdating.* Because of the above, by the time a visit is confirmed the shopper
-has already been in the zone for several frames. Timestamps are backdated to when
-the streak actually began, otherwise every dwell is short by the debounce window.
+*Backdating.* Because of the above, by the time a span is confirmed the point has
+already been in the zone for several frames. Timestamps are backdated to when the
+streak actually began, otherwise every dwell is short by the debounce window.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
-from patron.types import FrameResult
+from patron.types import FrameResult, Pose
 from patron.zones import ZoneSet
 
 
 @dataclass(frozen=True)
-class ZoneVisit:
-    """One shopper's continuous stay in one zone.
+class ZoneSpan:
+    """One continuous presence of one shopper's body point in one zone.
 
     `track_id` is session-scoped and carries no identity. See CLAUDE.md.
     """
@@ -43,8 +49,14 @@ class ZoneVisit:
         return max(0.0, self.exited_s - self.entered_s)
 
 
+# A visit and a reach are the same shape. The distinction is which body point
+# produced it and which table it lands in.
+ZoneVisit = ZoneSpan
+ZoneReach = ZoneSpan
+
+
 @dataclass
-class _OpenVisit:
+class _OpenSpan:
     entered_frame: int
     entered_s: float
     last_inside_frame: int
@@ -55,18 +67,19 @@ class _OpenVisit:
 class _PairState:
     inside_streak: int = 0
     outside_streak: int = 0
-    open_visit: _OpenVisit | None = None
+    open_span: _OpenSpan | None = None
 
 
 @dataclass
-class VisitTracker:
-    """Accumulates zone visits from a FrameResult stream.
+class _PresenceMachine:
+    """Debounced in-zone bookkeeping for (track, zone) pairs.
 
-    `min_frames_*` are in frames, so they are framerate dependent by design: the
-    caller passes fps and the CLI converts sensible defaults from seconds.
+    Deliberately knows nothing about bodies. Callers decide which point to test
+    and hand in the resulting membership, which is what lets visits and reaches
+    share one tested implementation.
     """
 
-    zones: ZoneSet
+    zone_names: tuple[str, ...]
     fps: float
     min_frames_inside: int = 3
     min_frames_outside: int = 5
@@ -75,101 +88,233 @@ class VisitTracker:
     _state: dict[tuple[int, str], _PairState] = field(default_factory=dict, init=False)
     _last_seen: dict[int, tuple[int, float]] = field(default_factory=dict, init=False)
 
-    def update(self, result: FrameResult) -> list[ZoneVisit]:
-        """Feed one frame. Returns any visits that completed on this frame."""
-        completed: list[ZoneVisit] = []
-        visible_ids: set[int] = set()
+    def update(
+        self,
+        frame_index: int,
+        timestamp_s: float,
+        membership: dict[int, set[str]],
+        visible: set[int],
+    ) -> list[ZoneSpan]:
+        """Advance one frame.
 
-        for person in result.people:
-            visible_ids.add(person.track_id)
-            self._last_seen[person.track_id] = (result.frame_index, result.timestamp_s)
+        `membership` holds only tracks we have evidence for this frame. A track
+        that is visible but absent from it (a shopper whose pose could not be
+        resolved, say) has its streaks left untouched rather than being counted as
+        outside, because no evidence is not evidence of absence.
+        """
+        completed: list[ZoneSpan] = []
 
-            inside_now = set(self.zones.containing(person.box.foot_point))
+        for track_id in visible:
+            self._last_seen[track_id] = (frame_index, timestamp_s)
 
-            for zone_name in self.zones.names:
-                key = (person.track_id, zone_name)
+        for track_id, inside_now in membership.items():
+            for zone_name in self.zone_names:
+                key = (track_id, zone_name)
                 state = self._state.setdefault(key, _PairState())
 
                 if zone_name in inside_now:
                     state.inside_streak += 1
                     state.outside_streak = 0
 
-                    if state.open_visit is None:
+                    if state.open_span is None:
                         if state.inside_streak >= self.min_frames_inside:
-                            # Backdate to the first frame of the streak.
                             offset = self.min_frames_inside - 1
-                            state.open_visit = _OpenVisit(
-                                entered_frame=result.frame_index - offset,
-                                entered_s=result.timestamp_s - offset / self.fps,
-                                last_inside_frame=result.frame_index,
-                                last_inside_s=result.timestamp_s,
+                            state.open_span = _OpenSpan(
+                                entered_frame=frame_index - offset,
+                                entered_s=timestamp_s - offset / self.fps,
+                                last_inside_frame=frame_index,
+                                last_inside_s=timestamp_s,
                             )
                     else:
-                        state.open_visit.last_inside_frame = result.frame_index
-                        state.open_visit.last_inside_s = result.timestamp_s
+                        state.open_span.last_inside_frame = frame_index
+                        state.open_span.last_inside_s = timestamp_s
                 else:
                     state.outside_streak += 1
                     state.inside_streak = 0
 
                     if (
-                        state.open_visit is not None
+                        state.open_span is not None
                         and state.outside_streak >= self.min_frames_outside
                     ):
-                        completed.append(
-                            self._close(person.track_id, zone_name, state.open_visit)
-                        )
-                        state.open_visit = None
+                        completed.append(self._close(track_id, zone_name, state.open_span))
+                        state.open_span = None
 
-        completed.extend(self._expire_lost_tracks(result.frame_index, visible_ids))
+        completed.extend(self._expire_lost_tracks(frame_index, visible))
         return completed
 
-    def _expire_lost_tracks(
-        self, frame_index: int, visible_ids: set[int]
-    ) -> list[ZoneVisit]:
-        """Close visits for shoppers who left the frame entirely.
+    def _expire_lost_tracks(self, frame_index: int, visible: set[int]) -> list[ZoneSpan]:
+        """Close spans for shoppers who left the frame entirely.
 
-        Without this, anyone who walks out of shot while inside a zone keeps an
-        open visit forever and never appears in the numbers.
+        Without this, anyone who walks out of shot mid-span keeps it open forever
+        and never appears in the numbers.
         """
-        completed: list[ZoneVisit] = []
+        completed: list[ZoneSpan] = []
         lost = [
             track_id
             for track_id, (last_frame, _) in self._last_seen.items()
-            if track_id not in visible_ids
+            if track_id not in visible
             and frame_index - last_frame > self.track_timeout_frames
         ]
 
         for track_id in lost:
-            for zone_name in self.zones.names:
+            for zone_name in self.zone_names:
                 state = self._state.get((track_id, zone_name))
-                if state is not None and state.open_visit is not None:
-                    completed.append(self._close(track_id, zone_name, state.open_visit))
-                    state.open_visit = None
+                if state is not None and state.open_span is not None:
+                    completed.append(self._close(track_id, zone_name, state.open_span))
+                    state.open_span = None
                 self._state.pop((track_id, zone_name), None)
             self._last_seen.pop(track_id, None)
 
         return completed
 
-    def flush(self) -> list[ZoneVisit]:
-        """Close every still-open visit. Call once the stream ends."""
-        completed: list[ZoneVisit] = []
+    def flush(self) -> list[ZoneSpan]:
+        """Close every still-open span. Call once the stream ends."""
+        completed: list[ZoneSpan] = []
         for (track_id, zone_name), state in self._state.items():
-            if state.open_visit is not None:
-                completed.append(self._close(track_id, zone_name, state.open_visit))
-                state.open_visit = None
+            if state.open_span is not None:
+                completed.append(self._close(track_id, zone_name, state.open_span))
+                state.open_span = None
         self._state.clear()
         self._last_seen.clear()
         return completed
 
     @staticmethod
-    def _close(track_id: int, zone_name: str, visit: _OpenVisit) -> ZoneVisit:
+    def _close(track_id: int, zone_name: str, span: _OpenSpan) -> ZoneSpan:
         # Exit is the last frame actually seen inside, not the frame the debounce
         # fired on, so dwell is not inflated by the outside streak.
-        return ZoneVisit(
+        return ZoneSpan(
             track_id=track_id,
             zone=zone_name,
-            entered_frame=visit.entered_frame,
-            entered_s=visit.entered_s,
-            exited_frame=visit.last_inside_frame,
-            exited_s=visit.last_inside_s,
+            entered_frame=span.entered_frame,
+            entered_s=span.entered_s,
+            exited_frame=span.last_inside_frame,
+            exited_s=span.last_inside_s,
         )
+
+
+class VisitTracker:
+    """Shoppers standing in floor zones, tested on the foot point."""
+
+    def __init__(
+        self,
+        zones: ZoneSet,
+        fps: float,
+        min_frames_inside: int = 3,
+        min_frames_outside: int = 5,
+        track_timeout_frames: int = 45,
+    ) -> None:
+        self.zones = zones.floor
+        self._machine = _PresenceMachine(
+            zone_names=self.zones.names,
+            fps=fps,
+            min_frames_inside=min_frames_inside,
+            min_frames_outside=min_frames_outside,
+            track_timeout_frames=track_timeout_frames,
+        )
+
+    def update(self, result: FrameResult) -> list[ZoneVisit]:
+        membership: dict[int, set[str]] = {}
+        visible: set[int] = set()
+        for person in result.people:
+            visible.add(person.track_id)
+            membership[person.track_id] = set(
+                self.zones.containing(person.box.foot_point)
+            )
+        return self._machine.update(
+            result.frame_index, result.timestamp_s, membership, visible
+        )
+
+    def flush(self) -> list[ZoneVisit]:
+        return self._machine.flush()
+
+
+class ReachTracker:
+    """Hands entering shelf zones, tested on wrists.
+
+    A reach is the signal that separates a shopper who merely stood in front of a
+    shelf from one who engaged with it, which is the difference between dwell and
+    an actual funnel.
+    """
+
+    def __init__(
+        self,
+        zones: ZoneSet,
+        fps: float,
+        min_frames_inside: int = 2,
+        min_frames_outside: int = 3,
+        track_timeout_frames: int = 45,
+        min_wrist_confidence: float = 0.5,
+        min_arm_extension: float = 1.6,
+    ) -> None:
+        self.zones = zones.shelf
+        self.min_wrist_confidence = min_wrist_confidence
+        self.min_arm_extension = min_arm_extension
+        # Reaches are shorter and sharper than visits, so the debounce is tighter.
+        # A shopper picking something up may have a hand in the shelf for well
+        # under a second.
+        self._machine = _PresenceMachine(
+            zone_names=self.zones.names,
+            fps=fps,
+            min_frames_inside=min_frames_inside,
+            min_frames_outside=min_frames_outside,
+            track_timeout_frames=track_timeout_frames,
+        )
+
+    def update(self, result: FrameResult, poses: dict[int, Pose]) -> list[ZoneReach]:
+        membership: dict[int, set[str]] = {}
+        visible: set[int] = set()
+
+        for person in result.people:
+            visible.add(person.track_id)
+            pose = poses.get(person.track_id)
+            if pose is None:
+                # No resolvable pose this frame. Leave the streaks alone rather
+                # than ending a reach on missing evidence.
+                continue
+
+            inside: set[str] = set()
+            for side in ("left", "right"):
+                wrist = pose.get(f"{side}_wrist", self.min_wrist_confidence)
+                if wrist is None or not self._is_extended(pose, side, wrist):
+                    continue
+                inside.update(self.zones.containing(wrist))
+            membership[person.track_id] = inside
+
+        return self._machine.update(
+            result.frame_index, result.timestamp_s, membership, visible
+        )
+
+    def _is_extended(
+        self, pose: Pose, side: str, wrist: tuple[float, float]
+    ) -> bool:
+        """Is the arm actually reaching, or is the hand just resting near the body?
+
+        A shelf zone is a flat polygon in image space, so it cannot tell a hand at
+        the shelf face from a hand merely between the camera and the shelf. A
+        shopper pushing a trolley down the aisle has both hands inside the shelf
+        polygon from the camera's point of view, and counting that as engagement
+        would inflate the funnel with people who never touched anything.
+
+        Arm extension separates the two: the wrist-to-shoulder distance is measured
+        in units of the shopper's own shoulder width, so it does not depend on how
+        far away they are or how big they appear.
+        """
+        if self.min_arm_extension <= 0:
+            return True
+
+        left = pose.get("left_shoulder", self.min_wrist_confidence)
+        right = pose.get("right_shoulder", self.min_wrist_confidence)
+        if left is None or right is None:
+            # No torso reference, so no way to judge. Do not silently drop a
+            # possible reach on missing evidence.
+            return True
+
+        shoulder_width = math.dist(left, right)
+        if shoulder_width < 1e-6:
+            return True
+
+        shoulder = left if side == "left" else right
+        return math.dist(wrist, shoulder) / shoulder_width >= self.min_arm_extension
+
+    def flush(self) -> list[ZoneReach]:
+        return self._machine.flush()

@@ -18,11 +18,29 @@ import cv2
 import numpy as np
 
 
+SHELF_KIND = "shelf"
+
+
 @dataclass(frozen=True)
 class Zone:
+    """A named area of the camera's view.
+
+    `kind` decides which body point membership is tested against, which is the
+    whole difference between a visit and a reach:
+
+    - `shelf` zones are drawn on the shelf face and tested against **wrists**. A
+      hand entering one is a reach.
+    - every other kind is floor, tested against **foot points**. A shopper standing
+      in one is a visit.
+    """
+
     name: str
     polygon: tuple[tuple[float, float], ...]
-    kind: str = "shelf"
+    kind: str = "floor"
+
+    @property
+    def is_shelf(self) -> bool:
+        return self.kind == SHELF_KIND
 
     def __post_init__(self) -> None:
         if len(self.polygon) < 3:
@@ -55,6 +73,16 @@ class ZoneSet:
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(z.name for z in self.zones)
+
+    @property
+    def floor(self) -> ZoneSet:
+        """Zones tested against foot points."""
+        return ZoneSet(zones=tuple(z for z in self.zones if not z.is_shelf))
+
+    @property
+    def shelf(self) -> ZoneSet:
+        """Zones tested against wrists."""
+        return ZoneSet(zones=tuple(z for z in self.zones if z.is_shelf))
 
     def containing(self, point: tuple[float, float]) -> tuple[str, ...]:
         """Names of every zone containing the point.

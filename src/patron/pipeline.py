@@ -19,9 +19,17 @@ from patron.types import FrameResult
 
 
 class Pipeline:
-    def __init__(self, detector: PersonDetector, tracker: str = "bytetrack") -> None:
+    def __init__(
+        self,
+        detector: PersonDetector,
+        tracker: str = "bytetrack",
+        pose: object | None = None,
+    ) -> None:
         self._detector = detector
         self._tracker_algorithm = tracker
+        # Pose is opt-in. It costs roughly 14ms per person per frame, and only
+        # matters once shelf zones exist to reach into.
+        self._pose = pose
 
     def run_with_frames(
         self, source: VideoSource, max_frames: int | None = None
@@ -36,9 +44,13 @@ class Pipeline:
 
             detections = self._detector.detect(frame)
             people = tracker.update(detections, frame)
+            poses = self._pose.estimate(frame, people) if self._pose is not None else {}
 
             yield frame, FrameResult(
-                frame_index=index, timestamp_s=timestamp_s, people=people
+                frame_index=index,
+                timestamp_s=timestamp_s,
+                people=people,
+                poses=poses,
             )
 
     def run(

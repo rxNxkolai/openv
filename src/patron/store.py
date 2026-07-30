@@ -41,6 +41,23 @@ CREATE TABLE IF NOT EXISTS visits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_visits_session_zone ON visits(session_id, zone);
+
+-- Same shape as visits. A reach is a wrist inside a shelf zone rather than a
+-- foot point inside a floor zone, and it is the signal that separates a shopper
+-- who stood in front of a shelf from one who engaged with it.
+CREATE TABLE IF NOT EXISTS reaches (
+    id             INTEGER PRIMARY KEY,
+    session_id     INTEGER NOT NULL REFERENCES sessions(id),
+    track_id       INTEGER NOT NULL,
+    zone           TEXT    NOT NULL,
+    entered_frame  INTEGER NOT NULL,
+    entered_s      REAL    NOT NULL,
+    exited_frame   INTEGER NOT NULL,
+    exited_s       REAL    NOT NULL,
+    dwell_s        REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reaches_session_zone ON reaches(session_id, zone);
 """
 
 
@@ -70,7 +87,15 @@ class EventStore:
         self._conn.commit()
         return int(cursor.lastrowid)
 
+    def add_reaches(self, session_id: int, reaches: Iterable[ZoneVisit]) -> int:
+        return self._add_spans("reaches", session_id, reaches)
+
     def add_visits(self, session_id: int, visits: Iterable[ZoneVisit]) -> int:
+        return self._add_spans("visits", session_id, visits)
+
+    def _add_spans(
+        self, table: str, session_id: int, spans: Iterable[ZoneVisit]
+    ) -> int:
         rows = [
             (
                 session_id,
@@ -82,18 +107,40 @@ class EventStore:
                 v.exited_s,
                 v.dwell_s,
             )
-            for v in visits
+            for v in spans
         ]
         if not rows:
             return 0
+        # `table` is never caller-supplied, only the two literals above.
         self._conn.executemany(
-            "INSERT INTO visits (session_id, track_id, zone, entered_frame,"
+            f"INSERT INTO {table} (session_id, track_id, zone, entered_frame,"  # noqa: S608
             " entered_s, exited_frame, exited_s, dwell_s)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         self._conn.commit()
         return len(rows)
+
+    def reach_summary(self, session_id: int | None = None) -> list[sqlite3.Row]:
+        """Per shelf-zone engagement."""
+        where = "WHERE session_id = ?" if session_id is not None else ""
+        params = (session_id,) if session_id is not None else ()
+        return list(
+            self._conn.execute(
+                f"""
+                SELECT zone,
+                       COUNT(*)                 AS reaches,
+                       COUNT(DISTINCT track_id) AS shoppers,
+                       ROUND(AVG(dwell_s), 2)   AS mean_hold_s,
+                       ROUND(MAX(dwell_s), 2)   AS max_hold_s
+                FROM reaches
+                {where}
+                GROUP BY zone
+                ORDER BY reaches DESC
+                """,  # noqa: S608 - `where` is a fixed literal
+                params,
+            )
+        )
 
     def zone_summary(self, session_id: int | None = None) -> list[sqlite3.Row]:
         """Per-zone funnel numbers.

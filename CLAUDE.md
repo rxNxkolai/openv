@@ -56,9 +56,21 @@ membership is always computed on the floor plane.
 
 - **M0** video in, people detected, stable track IDs out  (done)
 - **M1** zone polygons, visit records with dwell, per-zone funnel  (done, SQLite)
-- **M2** pose, reach / pickup / put-back, the real funnel  <- current
-- **M3** agent over the event store, diagnosis + recommendation + drafted change
+- **M2** pose and reach detection  (done, pending true-positive validation on real footage)
+- **M3** agent over the event store, diagnosis + recommendation + drafted change  <- next
 - **M4** live camera end to end
+
+Zone `kind` decides which body point membership is tested against, and that is the
+whole difference between a visit and a reach. `shelf` zones test **wrists**, every
+other kind tests **foot points**. Both go through one `_PresenceMachine`, so the
+debounce and backdating logic is written and tested once.
+
+**A flat shelf zone cannot tell a hand at the shelf from a hand between the camera
+and the shelf.** A shopper pushing a trolley registers inside the polygon with both
+hands. Arm extension (wrist-to-shoulder distance in units of shoulder width) is what
+separates them, and it is why `min_arm_extension` exists. Verified: it took a real
+clip from 2 false reaches to 0. True-positive validation still needs footage of
+someone actually reaching into a shelf.
 
 The event store is SQLite for now. The schema is deliberately plain so it ports to
 Postgres unchanged when cross-store aggregation lands. A visit is the durable record,

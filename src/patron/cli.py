@@ -49,21 +49,35 @@ def _cmd_track(args: argparse.Namespace) -> int:
             resolution=args.resolution,
             slice_size=args.slice,
         )
-        pipeline = Pipeline(detector, tracker=args.tracker)
+        pose_estimator = None
+        if args.pose:
+            from patron.pose import PoseEstimator
+
+            pose_estimator = PoseEstimator()
+            print("pose     MediaPipe (Apache 2.0), reach detection on")
+
+        pipeline = Pipeline(detector, tracker=args.tracker, pose=pose_estimator)
 
         zones = None
         visit_tracker = None
+        reach_tracker = None
         store = None
         session_id = None
         visits_written = 0
+        reaches_written = 0
 
         if args.zones:
-            from patron.events import VisitTracker
+            from patron.events import ReachTracker, VisitTracker
             from patron.store import EventStore
             from patron.zones import ZoneSet
 
             zones = ZoneSet.load(args.zones)
-            print(f"zones    {len(zones)} loaded: {', '.join(zones.names)}")
+            print(
+                f"zones    {len(zones.floor)} floor, {len(zones.shelf)} shelf: "
+                f"{', '.join(zones.names)}"
+            )
+            if len(zones.shelf) and not args.pose:
+                print("         note: shelf zones present but --pose is off, no reaches")
 
             # Debounce windows are specified in seconds and converted, so the
             # behaviour is the same on a 10fps camera and a 60fps one.
@@ -74,6 +88,9 @@ def _cmd_track(args: argparse.Namespace) -> int:
                 min_frames_outside=max(1, round(args.exit_seconds * info.fps)),
                 track_timeout_frames=max(1, round(args.lost_seconds * info.fps)),
             )
+            if pose_estimator is not None and len(zones.shelf):
+                reach_tracker = ReachTracker(zones=zones, fps=info.fps)
+
             store = EventStore(args.db)
             session_id = store.start_session(
                 source=args.source, fps=info.fps, width=info.width, height=info.height
@@ -116,6 +133,11 @@ def _cmd_track(args: argparse.Namespace) -> int:
                     if completed:
                         visits_written += store.add_visits(session_id, completed)
 
+                if reach_tracker is not None and store is not None:
+                    done = reach_tracker.update(result, dict(result.poses))
+                    if done:
+                        reaches_written += store.add_reaches(session_id, done)
+
                 if writer is not None or args.show:
                     canvas = renderer.annotate(frame, result)
                     if writer is not None:
@@ -142,6 +164,10 @@ def _cmd_track(args: argparse.Namespace) -> int:
             # visit. Without this flush they never reach the numbers.
             if visit_tracker is not None and store is not None:
                 visits_written += store.add_visits(session_id, visit_tracker.flush())
+                if reach_tracker is not None:
+                    reaches_written += store.add_reaches(
+                        session_id, reach_tracker.flush()
+                    )
                 store.close()
             if writer is not None:
                 writer.release()
@@ -157,6 +183,8 @@ def _cmd_track(args: argparse.Namespace) -> int:
     print(f"processing rate    {rate:.1f} fps  ({elapsed:.1f}s wall)")
     if args.zones:
         print(f"zone visits        {visits_written}")
+        if reach_tracker is not None:
+            print(f"shelf reaches      {reaches_written}")
     if args.out:
         print(f"written            {args.out}")
 
@@ -333,22 +361,44 @@ def _print_summary(db_path: str, session_id: int | None) -> None:
 
     with EventStore(db_path) as store:
         rows = store.zone_summary(session_id)
+        reaches = store.reach_summary(session_id)
 
-    if not rows:
+    if not rows and not reaches:
         print("no zone visits recorded")
         return
 
-    header = f"{'zone':<24}{'shoppers':>9}{'visits':>8}{'stopped':>9}{'stop%':>7}{'mean dwell':>12}{'max':>8}"
-    print(header)
-    print("-" * len(header))
-    for r in rows:
-        stop_pct = (r["stopped"] / r["visits"] * 100) if r["visits"] else 0.0
-        print(
-            f"{r['zone']:<24}{r['shoppers']:>9}{r['visits']:>8}{r['stopped']:>9}"
-            f"{stop_pct:>6.0f}%{r['mean_dwell_s']:>11.2f}s{r['max_dwell_s']:>7.1f}s"
+    if rows:
+        header = (
+            f"{'floor zone':<24}{'shoppers':>9}{'visits':>8}{'stopped':>9}"
+            f"{'stop%':>7}{'mean dwell':>12}{'max':>8}"
         )
-    print("\nstopped = dwell >= 2s. Until M2 adds reach detection, that is the")
-    print("stand-in for passed-by vs actually engaged.")
+        print(header)
+        print("-" * len(header))
+        for r in rows:
+            stop_pct = (r["stopped"] / r["visits"] * 100) if r["visits"] else 0.0
+            print(
+                f"{r['zone']:<24}{r['shoppers']:>9}{r['visits']:>8}{r['stopped']:>9}"
+                f"{stop_pct:>6.0f}%{r['mean_dwell_s']:>11.2f}s{r['max_dwell_s']:>7.1f}s"
+            )
+        print("\nstopped = dwell >= 2s, a proxy for lingering rather than passing.")
+
+    if reaches:
+        header = (
+            f"{'shelf zone':<24}{'shoppers':>9}{'reaches':>9}"
+            f"{'mean hold':>12}{'max':>8}"
+        )
+        print()
+        print(header)
+        print("-" * len(header))
+        for r in reaches:
+            print(
+                f"{r['zone']:<24}{r['shoppers']:>9}{r['reaches']:>9}"
+                f"{r['mean_hold_s']:>11.2f}s{r['max_hold_s']:>7.1f}s"
+            )
+        print("\na reach is a hand inside a shelf zone: engagement, not just presence.")
+    elif rows:
+        print("\nno shelf zones drawn, so no reach data. Draw a zone of kind 'shelf'")
+        print("over the shelf face and run with --pose to get the engagement half.")
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
@@ -537,6 +587,11 @@ def main(argv: list[str] | None = None) -> int:
     track.add_argument("--no-trace", action="store_true", help="hide path trails")
     track.add_argument(
         "--no-half", action="store_true", help="disable fp16 inference on cuda"
+    )
+    track.add_argument(
+        "--pose",
+        action="store_true",
+        help="run pose estimation, needed for reach detection on shelf zones",
     )
     track.add_argument("--zones", help="zones.json, enables visit capture")
     track.add_argument(

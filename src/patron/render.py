@@ -68,7 +68,15 @@ class Renderer:
             color = _ZONE_COLORS[i % len(_ZONE_COLORS)]
             contour = zone.contour.astype(np.int32)
             cv2.fillPoly(overlay, [contour], color)
-            cv2.polylines(canvas, [contour], True, color, self._zone_thickness)
+            # Shelf zones get a heavier outline: they are tested against wrists,
+            # not feet, so it should be obvious at a glance which is which.
+            cv2.polylines(
+                canvas,
+                [contour],
+                True,
+                color,
+                self._zone_thickness * (2 if zone.is_shelf else 1),
+            )
 
             count = occupancy.get(zone.name, 0)
             anchor = contour.reshape(-1, 2).min(axis=0)
@@ -89,10 +97,18 @@ class Renderer:
         canvas = frame.copy()
 
         if self._zones is not None:
+            # Floor zones count feet, shelf zones count hands. Occupancy has to be
+            # gathered the same way each tracker measures it or the overlay would
+            # disagree with the numbers.
             occupancy: dict[str, int] = {}
             for person in result.people:
-                for name in self._zones.containing(person.box.foot_point):
+                for name in self._zones.floor.containing(person.box.foot_point):
                     occupancy[name] = occupancy.get(name, 0) + 1
+                pose = result.poses.get(person.track_id)
+                if pose is not None:
+                    for wrist in pose.wrists():
+                        for name in self._zones.shelf.containing(wrist):
+                            occupancy[name] = occupancy.get(name, 0) + 1
             self._draw_zones(canvas, occupancy)
 
         if result.people:
@@ -117,12 +133,39 @@ class Renderer:
             canvas = self._box.annotate(canvas, detections)
             canvas = self._label.annotate(canvas, detections, labels=labels)
 
-            # Foot points: the anchor zone membership will use in M1.
             for person in result.people:
+                # Foot point: what floor-zone membership is tested against.
                 fx, fy = person.box.foot_point
                 cv2.circle(
                     canvas, (int(fx), int(fy)), self._foot_radius, (0, 255, 255), -1
                 )
+
+                # Wrists: what shelf-zone membership is tested against. Drawing
+                # the arm makes a missed or hallucinated joint obvious on sight.
+                pose = result.poses.get(person.track_id)
+                if pose is None:
+                    continue
+                for side in ("left", "right"):
+                    wrist = pose.get(f"{side}_wrist")
+                    if wrist is None:
+                        continue
+                    elbow = pose.get(f"{side}_elbow")
+                    if elbow is not None:
+                        cv2.line(
+                            canvas,
+                            (int(elbow[0]), int(elbow[1])),
+                            (int(wrist[0]), int(wrist[1])),
+                            (255, 255, 255),
+                            max(1, self._foot_radius - 2),
+                            cv2.LINE_AA,
+                        )
+                    cv2.circle(
+                        canvas,
+                        (int(wrist[0]), int(wrist[1])),
+                        self._foot_radius + 1,
+                        (60, 90, 255),
+                        -1,
+                    )
 
         cv2.putText(
             canvas,
