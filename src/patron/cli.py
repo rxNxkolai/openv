@@ -167,6 +167,126 @@ def _cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def _probe_cameras(limit: int = 5) -> list[int]:
+    import cv2
+
+    found = []
+    for index in range(limit):
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if cap.isOpened() and cap.read()[0]:
+            found.append(index)
+        cap.release()
+    return found
+
+
+def _cmd_record(args: argparse.Namespace) -> int:
+    """Capture fixed-camera footage to a file.
+
+    Webcams routinely ignore a requested framerate and deliver something else. If
+    the file is written claiming 30fps while the camera actually delivered 15, the
+    video plays at double speed and every dwell time downstream is halved. So the
+    real rate is measured during warmup and the file is written with that.
+    """
+    import cv2
+
+    index = args.camera
+    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        available = _probe_cameras()
+        print(f"error: could not open camera {index}", file=sys.stderr)
+        print(
+            f"available cameras: {available}" if available else "no cameras found",
+            file=sys.stderr,
+        )
+        return 1
+
+    # MJPG before anything else. OpenCV's DirectShow default is uncompressed YUY2,
+    # which saturates USB bandwidth and silently drops a 1280x960 webcam to ~7fps.
+    # Asking for MJPG lets the camera compress on-board and deliver its rated rate.
+    if not args.raw_capture:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    cap.set(cv2.CAP_PROP_FPS, args.fps)
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"camera   {index}")
+    print(f"capture  {width}x{height} (asked for {args.width}x{args.height})")
+
+    # Warm up and measure the rate the camera actually delivers.
+    for _ in range(10):
+        cap.read()
+    warmup_frames = 30
+    started = time.perf_counter()
+    for _ in range(warmup_frames):
+        if not cap.read()[0]:
+            print("error: camera stopped during warmup", file=sys.stderr)
+            cap.release()
+            return 1
+    measured_fps = warmup_frames / (time.perf_counter() - started)
+    print(f"fps      {measured_fps:.1f} measured (asked for {args.fps})")
+
+    if measured_fps < args.fps * 0.6:
+        print(
+            f"         note: USB bandwidth caps this camera at {measured_fps:.0f}fps"
+            f" at {width}x{height}."
+        )
+        print(
+            "         Fine for dwell and path. Drop to --width 640 --height 480"
+            " for ~30fps if tracking looks choppy."
+        )
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), measured_fps, (width, height)
+    )
+    if not writer.isOpened():
+        print(f"error: could not open {out_path} for writing", file=sys.stderr)
+        cap.release()
+        return 1
+
+    for remaining in range(args.countdown, 0, -1):
+        print(f"starting in {remaining}...", end="\r", flush=True)
+        deadline = time.perf_counter() + 1.0
+        while time.perf_counter() < deadline:
+            cap.read()
+
+    print(f"RECORDING {args.seconds}s into {out_path}   (ctrl-c to stop early)")
+
+    frames = 0
+    started = time.perf_counter()
+    try:
+        while (elapsed := time.perf_counter() - started) < args.seconds:
+            ok, frame = cap.read()
+            if not ok:
+                print("\ncamera stopped early")
+                break
+            writer.write(frame)
+            frames += 1
+            if frames % 15 == 0:
+                print(
+                    f"  {elapsed:6.1f}s / {args.seconds}s   {frames} frames",
+                    end="\r",
+                    flush=True,
+                )
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        writer.release()
+        cap.release()
+
+    elapsed = time.perf_counter() - started
+    size_mb = out_path.stat().st_size / 1_000_000 if out_path.exists() else 0.0
+    print(f"\n\nrecorded  {frames} frames, {elapsed:.1f}s, {size_mb:.1f} MB")
+    print(f"saved     {out_path}")
+    print("\nnext:")
+    print(f"  uv run patron zones {out_path} --out data/my.zones.json")
+    print(f"  uv run patron track {out_path} --zones data/my.zones.json --db out/patron.db")
+    return 0
+
+
 def _print_summary(db_path: str, session_id: int | None) -> None:
     from patron.store import EventStore
 
@@ -400,6 +520,27 @@ def main(argv: list[str] | None = None) -> int:
         help="time a track can be missing before its visits are closed",
     )
     track.set_defaults(func=_cmd_track)
+
+    record = sub.add_parser("record", help="capture fixed-camera footage to a file")
+    record.add_argument(
+        "--out", default="data/my-store.mp4", help="where to save the recording"
+    )
+    record.add_argument("--seconds", type=int, default=600, help="how long to record")
+    record.add_argument("--camera", type=int, default=0, help="camera index")
+    record.add_argument(
+        "--width", type=int, default=1280, help="640 usually buys a much higher fps"
+    )
+    record.add_argument("--height", type=int, default=960)
+    record.add_argument("--fps", type=int, default=30)
+    record.add_argument(
+        "--countdown", type=int, default=5, help="seconds before recording starts"
+    )
+    record.add_argument(
+        "--raw-capture",
+        action="store_true",
+        help="skip the MJPG request, only if the camera misbehaves with it",
+    )
+    record.set_defaults(func=_cmd_record)
 
     zones = sub.add_parser("zones", help="draw zone polygons on a frame")
     zones.add_argument("source", help="video file to draw zones on")

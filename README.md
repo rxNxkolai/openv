@@ -37,6 +37,23 @@ Run on a webcam:
 uv run patron track webcam:0 --show
 ```
 
+## Recording your own footage
+
+Fixed-camera footage is what this is built for. The bundled samples cannot validate
+dwell: one is 8 seconds long, the other has a moving camera.
+
+```bash
+uv run patron record --out data/my-store.mp4 --seconds 600
+```
+
+The camera must not move once recording starts.
+
+Webcams routinely ignore the framerate you ask for. The recorder measures the rate
+actually delivered during warmup and writes the file with that, because a file that
+claims 30fps while the camera delivered 7 plays at 4x speed and divides every dwell
+time by four. USB bandwidth is usually the limit: a camera that manages 30fps at
+640x480 often drops to 7fps at 1280x960. Both are fine for dwell and path.
+
 ## Zones and events (M1)
 
 Draw the areas you want numbers for. Click points, `n` to name and close a zone,
