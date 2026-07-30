@@ -37,6 +37,26 @@ Run on a webcam:
 uv run patron track webcam:0 --show
 ```
 
+## Live console
+
+Camera in, overlay and running numbers in the browser. Draw zones by clicking on
+the video.
+
+```bash
+uv run patron live
+```
+
+Opens `http://127.0.0.1:8000`. The capture and inference loop runs on its own
+thread and publishes the latest annotated frame plus a stats snapshot; HTTP
+handlers only read those slots, so several open tabs cost nothing extra and a slow
+inference pass never stalls the page.
+
+Video is MJPEG because it needs no client library and no negotiation. Stats are
+polled once a second, which a socket would not improve on.
+
+Changing zones resets the counts on purpose: numbers gathered against different
+boundaries are not comparable.
+
 ## Recording your own footage
 
 Fixed-camera footage is what this is built for. The bundled samples cannot validate

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>patron · live</title>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#12151a; --line:#232833; --line2:#2f3644;
+    --fg:#e6e9ef; --dim:#7d8797; --dimmer:#59616f;
+    --accent:#ffb020; --cyan:#3fd8e0; --good:#4ade80;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{display:grid; grid-template-columns:minmax(0,1fr) 340px; height:100vh}
+  @media (max-width:900px){ .app{grid-template-columns:1fr; height:auto} }
+
+  /* ---- stage ---- */
+  .stage{position:relative; display:flex; flex-direction:column; min-width:0; background:#000}
+  .bar{
+    display:flex; align-items:center; gap:14px; padding:0 12px; height:34px;
+    background:var(--panel); border-bottom:1px solid var(--line); flex:none;
+  }
+  .brand{color:var(--accent); letter-spacing:.14em; text-transform:uppercase; font-size:10px}
+  .bar .sp{flex:1}
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; color:var(--dim);
+    font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+  }
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--dimmer)}
+  .dot.on{background:var(--good); box-shadow:0 0 8px var(--good)}
+  button{
+    font:inherit; font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+    background:transparent; color:var(--dim); border:1px solid var(--line2);
+    padding:4px 9px; cursor:pointer; border-radius:2px;
+  }
+  button:hover{color:var(--fg); border-color:var(--dim)}
+  button.on{color:#0b0d10; background:var(--accent); border-color:var(--accent)}
+  button:disabled{opacity:.35; cursor:not-allowed}
+
+  /* The feed sizes itself against .view, which has a definite height from
+     flex:1 inside a 100vh column. An intermediate auto-height wrapper would make
+     the image's max-height:100% cyclic and collapse it to a pixel. */
+  .view{position:relative; flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; min-height:0}
+  #feed{display:block; max-width:100%; max-height:100%; object-fit:contain}
+  /* Positioned and sized in px by fitCanvas() to match the letterboxed image. */
+  #draw{position:absolute; cursor:crosshair; display:none}
+  .drawing #draw{display:block}
+  .hint{
+    position:absolute; left:50%; top:12px; transform:translateX(-50%);
+    background:rgba(11,13,16,.9); border:1px solid var(--line2); color:var(--dim);
+    padding:5px 10px; font-size:10px; letter-spacing:.06em; border-radius:2px; display:none;
+  }
+  .drawing .hint{display:block}
+
+  /* ---- rail ---- */
+  .rail{
+    background:var(--panel); border-left:1px solid var(--line);
+    display:flex; flex-direction:column; min-height:0; overflow-y:auto;
+  }
+  .sec{border-bottom:1px solid var(--line)}
+  .sec > h2{
+    margin:0; padding:8px 12px 6px; font-size:9px; font-weight:500;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--dimmer);
+  }
+  .kpis{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line)}
+  .kpi{background:var(--panel); padding:9px 12px}
+  .kpi b{display:block; font-size:20px; font-weight:500; letter-spacing:-.02em}
+  .kpi span{font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--dimmer)}
+
+  table{width:100%; border-collapse:collapse}
+  th,td{padding:5px 12px; text-align:right; font-weight:400}
+  th{font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--dimmer)}
+  th:first-child,td:first-child{text-align:left}
+  tbody tr{border-top:1px solid var(--line)}
+  td.z{color:var(--fg)}
+  td.in{color:var(--cyan)}
+  .swatch{display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:1px;vertical-align:middle}
+
+  .feed{max-height:230px; overflow-y:auto}
+  .ev{display:flex; gap:8px; padding:4px 12px; border-top:1px solid var(--line); color:var(--dim)}
+  .ev b{color:var(--fg); font-weight:400}
+  .ev .d{margin-left:auto; color:var(--accent)}
+  .empty{padding:10px 12px; color:var(--dimmer); font-size:11px}
+  .err{padding:8px 12px; color:#ff6b6b; font-size:11px; border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="stage">
+    <div class="bar">
+      <span class="brand">patron</span>
+      <span class="pill"><i class="dot" id="live"></i><span id="livetxt">connecting</span></span>
+      <span class="pill" id="fps">— fps</span>
+      <span class="sp"></span>
+      <button id="drawBtn">draw zone</button>
+      <button id="undoBtn" disabled>undo pt</button>
+      <button id="doneBtn" disabled>finish zone</button>
+      <button id="clearBtn">clear all</button>
+    </div>
+    <div class="view">
+      <img id="feed" src="/stream" alt="live camera feed with detection overlay">
+      <canvas id="draw"></canvas>
+      <div class="hint">click to place points · at least 3 · then finish zone</div>
+    </div>
+  </div>
+
+  <aside class="rail">
+    <section class="sec">
+      <div class="kpis">
+        <div class="kpi"><b id="pnow">0</b><span>in frame</span></div>
+        <div class="kpi"><b id="ptot">0</b><span>shoppers seen</span></div>
+        <div class="kpi"><b id="vtot">0</b><span>zone visits</span></div>
+        <div class="kpi"><b id="up">0s</b><span>uptime</span></div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>zones</h2>
+      <table>
+        <thead><tr><th>zone</th><th>in</th><th>visits</th><th>people</th><th>dwell</th></tr></thead>
+        <tbody id="ztb"></tbody>
+      </table>
+      <div class="empty" id="zempty">no zones. click “draw zone” and outline an area of floor.</div>
+    </section>
+
+    <section class="sec">
+      <h2>completed visits</h2>
+      <div class="feed" id="feedList"></div>
+      <div class="empty" id="fempty">nothing yet. a visit lands when someone leaves a zone.</div>
+    </section>
+
+    <div class="err" id="err" style="display:none"></div>
+  </aside>
+</div>
+
+<script>
+const COLORS = ['#ffb020','#3fd8e0','#ff6bd6','#4ade80','#c8c832','#9b6bff'];
+const img  = document.getElementById('feed');
+const cv   = document.getElementById('draw');
+const ctx  = cv.getContext('2d');
+const app  = document.getElementById('app');
+
+let source = {w:1280, h:960};
+let zones  = [];
+let pts    = [];
+let drawing = false;
+
+/* ---------- geometry ---------- */
+// The feed element is letterboxed by CSS, so canvas pixels and source pixels
+// differ. Zones are stored in SOURCE coordinates so they survive a resize.
+function fitCanvas(){
+  const r = img.getBoundingClientRect();
+  if (r.width < 2 || r.height < 2) return;   // stream not decoded yet
+  const p = img.parentElement.getBoundingClientRect();
+  // object-fit:contain letterboxes the image inside its box, so the canvas is
+  // pinned to the image's actual painted rect rather than stretched over .view.
+  cv.style.left   = (r.left - p.left) + 'px';
+  cv.style.top    = (r.top  - p.top)  + 'px';
+  cv.style.width  = r.width  + 'px';
+  cv.style.height = r.height + 'px';
+  cv.width  = Math.round(r.width);
+  cv.height = Math.round(r.height);
+  redraw();
+}
+const toSource  = (x,y) => [x * source.w / cv.width, y * source.h / cv.height];
+const toCanvas  = (x,y) => [x * cv.width / source.w, y * cv.height / source.h];
+
+function redraw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+
+  zones.forEach((z,i) => {
+    const c = COLORS[i % COLORS.length];
+    ctx.beginPath();
+    z.polygon.forEach(([x,y],k) => {
+      const [cx,cy] = toCanvas(x,y);
+      k ? ctx.lineTo(cx,cy) : ctx.moveTo(cx,cy);
+    });
+    ctx.closePath();
+    ctx.fillStyle = c + '22'; ctx.fill();
+    ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.stroke();
+  });
+
+  if (pts.length){
+    ctx.beginPath();
+    pts.forEach(([x,y],k) => {
+      const [cx,cy] = toCanvas(x,y);
+      k ? ctx.lineTo(cx,cy) : ctx.moveTo(cx,cy);
+    });
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    pts.forEach(([x,y]) => {
+      const [cx,cy] = toCanvas(x,y);
+      ctx.beginPath(); ctx.arc(cx,cy,3.5,0,7); ctx.fillStyle = '#fff'; ctx.fill();
+    });
+  }
+}
+
+cv.addEventListener('click', e => {
+  const r = cv.getBoundingClientRect();
+  pts.push(toSource(e.clientX - r.left, e.clientY - r.top));
+  document.getElementById('undoBtn').disabled = false;
+  document.getElementById('doneBtn').disabled = pts.length < 3;
+  redraw();
+});
+
+/* ---------- toolbar ---------- */
+const drawBtn = document.getElementById('drawBtn');
+drawBtn.onclick = () => {
+  drawing = !drawing;
+  app.classList.toggle('drawing', drawing);
+  drawBtn.classList.toggle('on', drawing);
+  drawBtn.textContent = drawing ? 'drawing…' : 'draw zone';
+  if (drawing) fitCanvas();
+};
+document.getElementById('undoBtn').onclick = () => {
+  pts.pop();
+  document.getElementById('undoBtn').disabled = !pts.length;
+  document.getElementById('doneBtn').disabled = pts.length < 3;
+  redraw();
+};
+document.getElementById('doneBtn').onclick = async () => {
+  if (pts.length < 3) return;
+  const name = (prompt('zone name (e.g. shelf, doorway, aisle):') || '').trim();
+  if (!name) return;
+  if (zones.some(z => z.name === name)) { alert('that name is taken'); return; }
+  zones.push({name, kind:'shelf', polygon: pts.slice()});
+  pts = [];
+  document.getElementById('undoBtn').disabled = true;
+  document.getElementById('doneBtn').disabled = true;
+  await save();
+  redraw();
+};
+document.getElementById('clearBtn').onclick = async () => {
+  if (!zones.length && !pts.length) return;
+  if (!confirm('remove all zones and reset the counts?')) return;
+  zones = []; pts = [];
+  await save();
+  redraw();
+};
+
+async function save(){
+  const r = await fetch('/api/zones', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({zones})
+  });
+  const j = await r.json();
+  if (!j.ok) showErr(j.error || 'could not save zones');
+}
+function showErr(msg){
+  const el = document.getElementById('err');
+  el.style.display = msg ? 'block' : 'none';
+  el.textContent = msg || '';
+}
+
+/* ---------- polling ---------- */
+async function loadZones(){
+  const j = await (await fetch('/api/zones')).json();
+  source = {w: j.width, h: j.height};
+  zones = j.zones.map(z => ({name:z.name, kind:z.kind, polygon:z.polygon}));
+  fitCanvas();
+}
+
+function fmtUp(s){
+  if (s < 60) return s + 's';
+  const m = Math.floor(s/60);
+  return m < 60 ? m + 'm ' + (s%60) + 's' : Math.floor(m/60) + 'h ' + (m%60) + 'm';
+}
+
+async function tick(){
+  try {
+    const s = await (await fetch('/api/stats')).json();
+
+    document.getElementById('live').classList.toggle('on', s.running && !s.error);
+    document.getElementById('livetxt').textContent = s.error ? 'error' : (s.running ? 'live' : 'stopped');
+    document.getElementById('fps').textContent = s.fps + ' fps';
+    document.getElementById('pnow').textContent = s.people_now;
+    document.getElementById('ptot').textContent = s.shoppers_total;
+    document.getElementById('up').textContent   = fmtUp(s.uptime_s);
+    document.getElementById('vtot').textContent = s.zones.reduce((a,z)=>a+z.visits,0);
+    showErr(s.error);
+
+    const tb = document.getElementById('ztb');
+    tb.innerHTML = s.zones.map((z,i) => {
+      const c = COLORS[i % COLORS.length];
+      return `<tr>
+        <td class="z"><i class="swatch" style="background:${c}"></i>${z.name}</td>
+        <td class="in">${z.inside}</td><td>${z.visits}</td>
+        <td>${z.shoppers}</td><td>${z.mean_dwell}s</td></tr>`;
+    }).join('');
+    document.getElementById('zempty').style.display = s.zones.length ? 'none' : 'block';
+
+    document.getElementById('feedList').innerHTML = s.recent.map(v =>
+      `<div class="ev"><b>#${v.track_id}</b><span>${v.zone}</span><span class="d">${v.dwell}s</span></div>`
+    ).join('');
+    document.getElementById('fempty').style.display = s.recent.length ? 'none' : 'block';
+  } catch (e) {
+    document.getElementById('live').classList.remove('on');
+    document.getElementById('livetxt').textContent = 'offline';
+  }
+}
+
+// An MJPEG stream never fires a reliable `load` event, so sizing the canvas off
+// that leaves it at 1x0 and existing zones render invisibly. Observing the element
+// covers first layout, first decoded frame, and window resizes in one path.
+new ResizeObserver(fitCanvas).observe(img);
+loadZones();
+setInterval(tick, 700);
+tick();
+</script>
+</body>
+</html>

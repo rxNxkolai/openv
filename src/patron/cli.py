@@ -167,6 +167,47 @@ def _cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_live(args: argparse.Namespace) -> int:
+    """Live console: camera in, overlay and running numbers in the browser."""
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from patron.web import LiveEngine, create_app
+
+    device = args.device
+    if device is None:
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    engine = LiveEngine(
+        camera=args.camera,
+        width=args.width,
+        height=args.height,
+        zones_path=args.zones,
+        conf=args.conf,
+        resolution=args.resolution,
+        variant=args.variant,
+        device=device,
+    )
+    app = create_app(engine)
+
+    url = f"http://127.0.0.1:{args.port}"
+    print(f"camera   {args.camera} at {args.width}x{args.height}")
+    print(f"model    RF-DETR {args.variant} @ {args.resolution}px on {device}")
+    print(f"zones    {args.zones}")
+    print(f"\nopen     {url}\n")
+    print("draw zones by clicking on the video. ctrl-c here to stop.\n")
+
+    if not args.no_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    return 0
+
+
 def _probe_cameras(limit: int = 5) -> list[int]:
     import cv2
 
@@ -520,6 +561,23 @@ def main(argv: list[str] | None = None) -> int:
         help="time a track can be missing before its visits are closed",
     )
     track.set_defaults(func=_cmd_track)
+
+    live = sub.add_parser("live", help="live console in the browser")
+    live.add_argument("--camera", type=int, default=0, help="camera index")
+    live.add_argument("--port", type=int, default=8000)
+    live.add_argument(
+        "--zones", default="data/live.zones.json", help="zone file, created if missing"
+    )
+    live.add_argument("--width", type=int, default=1280)
+    live.add_argument("--height", type=int, default=960)
+    live.add_argument("--conf", type=float, default=0.4)
+    live.add_argument("--resolution", type=int, default=896)
+    live.add_argument(
+        "--variant", default="medium", choices=["nano", "small", "medium", "large"]
+    )
+    live.add_argument("--device", choices=["cuda", "cpu"], help="default: auto")
+    live.add_argument("--no-browser", action="store_true", help="do not auto-open")
+    live.set_defaults(func=_cmd_live)
 
     record = sub.add_parser("record", help="capture fixed-camera footage to a file")
     record.add_argument(

@@ -11,6 +11,8 @@ dependencies = [
     "opencv-python>=4.10",
     "numpy>=1.26,<3",
     "trackers>=2.5.0.post0",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.0",
 ]
 
 [project.scripts]
