@@ -195,6 +195,111 @@ def _cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_analysis(args: argparse.Namespace):
+    from patron.analysis import analyze
+    from patron.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return None, None, None
+
+    store = EventStore(args.db)
+    session_id = None if args.all_sessions else store.latest_session_id()
+    return store, session_id, analyze(store, session_id, stop_threshold_s=args.stop_seconds)
+
+
+def _print_findings(analysis) -> None:
+    from patron.analysis import MIN_SHOPPERS_FOR_CONFIDENCE
+
+    if not analysis.findings:
+        print("no shelf zones with reach data yet.")
+        print("Draw a zone of kind 'shelf' and run `track --pose` to get a funnel.")
+        return
+
+    median = analysis.median_reach_rate
+    print(f"shoppers observed   {analysis.total_shoppers}  (upper bound, see note)")
+    print(
+        "store median reach  "
+        + ("n/a" if median is None else f"{median * 100:.0f}%")
+    )
+    print()
+
+    marks = {"high": "!!", "medium": " !", "low": "  ", "none": " ?"}
+    for f in analysis.findings:
+        fn = f.funnel
+        print(f"{marks[f.severity]} {f.headline}")
+        if fn.passed:
+            print(
+                f"     passed {fn.passed}"
+                f" -> stopped {fn.stopped}"
+                f" -> reached {fn.reached}"
+                f"   (aisle: {fn.floor_zone or 'unpaired'}, "
+                f"mean dwell {fn.mean_dwell_s:.1f}s)"
+            )
+        print()
+
+    print(f"!! high   ! medium   ? below {MIN_SHOPPERS_FOR_CONFIDENCE} shoppers, not a rate yet")
+
+
+def _cmd_analyze(args: argparse.Namespace) -> int:
+    """Deterministic funnel analysis. No model, no API key."""
+    store, session_id, analysis = _load_analysis(args)
+    if store is None:
+        return 1
+
+    scope = "all sessions" if args.all_sessions else f"session {session_id}"
+    print(f"{args.db}  ({scope})\n")
+    _print_findings(analysis)
+    store.close()
+    return 0
+
+
+def _cmd_advise(args: argparse.Namespace) -> int:
+    """Agent recommendations over the computed findings."""
+    from patron.agent import AdvisorUnavailable, advise
+
+    store, session_id, analysis = _load_analysis(args)
+    if store is None:
+        return 1
+
+    scope = "all sessions" if args.all_sessions else f"session {session_id}"
+    print(f"{args.db}  ({scope})\n")
+    _print_findings(analysis)
+
+    if not analysis.actionable:
+        print("\nnothing actionable to advise on.")
+        store.close()
+        return 0
+
+    print(f"\nasking {args.model} about {len(analysis.actionable)} finding(s)...\n")
+    try:
+        recommendations = advise(analysis, model=args.model, effort=args.effort)
+    except AdvisorUnavailable as exc:
+        print(f"advisor unavailable: {exc}", file=sys.stderr)
+        print(
+            "\nThe funnel above is unaffected: it is computed locally and needs no"
+            " model.\nRun `patron analyze` for it without this step.",
+            file=sys.stderr,
+        )
+        store.close()
+        return 1
+
+    for i, r in enumerate(recommendations, 1):
+        print(f"--- {i}. {r.zone}  [{r.confidence} confidence] " + "-" * 24)
+        print(f"diagnosis   {r.diagnosis}")
+        print(f"action      {r.action}")
+        print(f"because     {r.rationale}")
+        print(f"expect      {r.expected_effect}")
+        print(f"\ndraft:\n{r.drafted_change}\n")
+
+    if session_id is not None:
+        written = store.add_recommendations(session_id, recommendations)
+        print(f"stored {written} recommendation(s) with status 'proposed'.")
+        print("Nothing has been applied. Approval is a human decision.")
+    store.close()
+    return 0
+
+
 def _cmd_live(args: argparse.Namespace) -> int:
     """Live console: camera in, overlay and running numbers in the browser."""
     import threading
@@ -669,6 +774,31 @@ def main(argv: list[str] | None = None) -> int:
         "--all-sessions", action="store_true", help="aggregate across every session"
     )
     report.set_defaults(func=_cmd_report)
+
+    analyze_p = sub.add_parser(
+        "analyze", help="funnel analysis and ranked findings (no model needed)"
+    )
+    analyze_p.add_argument("--db", default="out/patron.db")
+    analyze_p.add_argument("--all-sessions", action="store_true")
+    analyze_p.add_argument(
+        "--stop-seconds",
+        type=float,
+        default=2.0,
+        help="dwell above which a shopper counts as stopping, not passing",
+    )
+    analyze_p.set_defaults(func=_cmd_analyze)
+
+    advise_p = sub.add_parser(
+        "advise", help="agent recommendations over the findings (needs credentials)"
+    )
+    advise_p.add_argument("--db", default="out/patron.db")
+    advise_p.add_argument("--all-sessions", action="store_true")
+    advise_p.add_argument("--stop-seconds", type=float, default=2.0)
+    advise_p.add_argument("--model", default="claude-opus-5")
+    advise_p.add_argument(
+        "--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"]
+    )
+    advise_p.set_defaults(func=_cmd_advise)
 
     fetch = sub.add_parser("fetch-sample", help="download a sample video into data/")
     fetch.add_argument("name", nargs="?", help="asset name, omit to list")

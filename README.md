@@ -13,6 +13,7 @@ The cameras are the sensor. The agent is the product.
 **M0: detection and tracking.** Video in, people detected, stable track IDs out.
 **M1: zones and events.** Named store areas, visit records with dwell, per-zone funnel.
 **M2: reach detection.** Pose estimation, hands entering shelf zones, engagement vs presence.
+**M3: analysis and agent.** Ranked funnel findings, then recommendations over them.
 
 ## Quickstart
 
@@ -137,6 +138,61 @@ uv run patron track data/my-store.mp4 --zones data/my.zones.json --db out/patron
 ```
 
 Pose costs roughly 14ms per person per frame and is off by default.
+
+## Analysis and recommendations (M3)
+
+```bash
+uv run patron analyze --db out/patron.db
+```
+
+```
+shoppers observed   370  (upper bound, see note)
+store median reach  5%
+
+!! shelf-endcap: 74% of 140 shoppers walked past, only 1% reached. Store median is 5%
+     passed 140 -> stopped 36 -> reached 2   (aisle: aisle-6-endcap, mean dwell 2.2s)
+
+ ! shelf-snacks: 72% of shoppers stopped but only 5% reached. They looked and did not engage
+     passed 110 -> stopped 79 -> reached 5   (aisle: aisle-9-snacks, mean dwell 4.4s)
+
+   shelf-cereal: 30% reach rate across 120 shoppers, at or above the store median
+```
+
+Those are three different problems and they need three different fixes. A dead
+zone with traffic is a placement problem; shoppers who stop and never reach are an
+attention problem at the shelf face.
+
+**Shelves are paired to aisles from the data, not from configuration.** A shelf's
+reachers were standing somewhere while they reached, and the aisle they were most
+often standing in is the one that shelf faces. A hand-maintained mapping would
+drift out of sync with the store; this cannot.
+
+**The benchmark is the store's own median**, not an industry figure. A retailer can
+argue with an external number. They cannot argue with their own other aisles,
+measured the same way on the same day.
+
+Below 30 observed shoppers a rate is not reported as a rate. "0% reach" off three
+shoppers is a lie dressed as data.
+
+### The agent
+
+```bash
+uv run patron advise --db out/patron.db
+```
+
+Needs credentials (`ANTHROPIC_API_KEY`, or `ant auth login`). Two rules it runs
+under:
+
+- **It never computes.** Every number it cites was computed by `analyze` and handed
+  to it. The prompt carries findings, never raw rows.
+- **It never executes.** Output is stored with status `proposed`. No code path sets
+  `approved`, because approval is a human decision and that is the liability gate.
+
+Patron knows zones, not products, so recommendations cover placement, shelf height,
+facing count, and signage — not "move SKU-204". The system prompt forbids inventing
+SKUs or prices to cover that gap.
+
+If credentials are missing, `analyze` is unaffected: it needs no model at all.
 
 ### The false-reach problem
 

@@ -57,8 +57,21 @@ membership is always computed on the floor plane.
 - **M0** video in, people detected, stable track IDs out  (done)
 - **M1** zone polygons, visit records with dwell, per-zone funnel  (done, SQLite)
 - **M2** pose and reach detection  (done, pending true-positive validation on real footage)
-- **M3** agent over the event store, diagnosis + recommendation + drafted change  <- next
-- **M4** live camera end to end
+- **M3** analysis + agent, diagnosis and recommendation  (done, agent path unrun)
+- **M4** live camera end to end  <- next
+
+**The agent never computes and never executes.** `analysis.py` computes every number
+deterministically and `agent.py` only writes prose over the result. A model doing
+arithmetic on raw rows would be unauditable, and a retailer argues with the numbers
+before the advice. Recommendations are stored with status `proposed`; no code path
+sets `approved`, because approval is the liability gate.
+
+**Patron knows zones, not products.** It cannot say "move SKU-204" — that needs
+SKU-level identification, which is out of scope until Phase 3 hardware. The agent's
+system prompt forbids inventing SKUs, brands, or prices to paper over that gap.
+
+The deterministic layer must keep working with no API key. It is the floor of the
+product, and `patron analyze` is the command that proves it.
 
 Zone `kind` decides which body point membership is tested against, and that is the
 whole difference between a visit and a reach. `shelf` zones test **wrists**, every
