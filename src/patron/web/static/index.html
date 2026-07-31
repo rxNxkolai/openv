@@ -246,10 +246,18 @@ document.getElementById('undoBtn').onclick = () => {
 };
 document.getElementById('doneBtn').onclick = async () => {
   if (pts.length < 3) return;
-  const name = (prompt('zone name (e.g. shelf, doorway, aisle):') || '').trim();
+  const name = (prompt('zone name (e.g. endcap, doorway, aisle):') || '').trim();
   if (!name) return;
   if (zones.some(z => z.name === name)) { alert('that name is taken'); return; }
-  zones.push({name, kind:'shelf', polygon: pts.slice()});
+  // Nothing about the polygon says whether it is a shelf face or a patch of
+  // floor, so it has to be asked. Getting it wrong is silent: the zone just
+  // reports nothing.
+  const kind = confirm(
+    'Is this a shelf zone?\n\n' +
+    'OK      shelf, tested against wrists, produces reaches (needs --pose)\n' +
+    'Cancel  floor, tested against foot points, produces visits'
+  ) ? 'shelf' : 'floor';
+  zones.push({name, kind, polygon: pts.slice()});
   pts = [];
   document.getElementById('undoBtn').disabled = true;
   document.getElementById('doneBtn').disabled = true;

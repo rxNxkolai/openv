@@ -19,6 +19,7 @@ import numpy as np
 
 
 SHELF_KIND = "shelf"
+FLOOR_KIND = "floor"
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ class Zone:
 
     name: str
     polygon: tuple[tuple[float, float], ...]
-    kind: str = "floor"
+    kind: str = FLOOR_KIND
 
     @property
     def is_shelf(self) -> bool:
@@ -95,11 +96,14 @@ class ZoneSet:
     @classmethod
     def load(cls, path: str | Path) -> ZoneSet:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        # A zone with no declared kind is a floor zone. Defaulting the other way
+        # turns every unlabelled polygon into a wrist-tested one, which silently
+        # reports no visits at all and no reaches either unless --pose is on.
         zones = tuple(
             Zone(
                 name=z["name"],
                 polygon=tuple((float(x), float(y)) for x, y in z["polygon"]),
-                kind=z.get("kind", "shelf"),
+                kind=z.get("kind", FLOOR_KIND),
             )
             for z in raw["zones"]
         )

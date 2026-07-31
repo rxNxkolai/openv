@@ -60,6 +60,23 @@ def test_round_trip_through_json(tmp_path):
     assert loaded.zones[0].polygon == SQUARE
 
 
+def test_zone_with_no_declared_kind_loads_as_floor(tmp_path):
+    path = tmp_path / "zones.json"
+    path.write_text(
+        json.dumps({"zones": [{"name": "aisle-6", "polygon": [[0, 0], [1, 0], [1, 1]]}]}),
+        encoding="utf-8",
+    )
+
+    # Defaulting the other way would test an unlabelled polygon against wrists,
+    # so it would report no visits at all, and no reaches either unless pose is
+    # running. Floor is the kind that fails visibly rather than silently.
+    loaded = ZoneSet.load(path)
+
+    assert loaded.zones[0].kind == "floor"
+    assert len(loaded.floor) == 1
+    assert len(loaded.shelf) == 0
+
+
 def test_duplicate_zone_names_are_rejected(tmp_path):
     path = tmp_path / "zones.json"
     path.write_text(
