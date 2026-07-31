@@ -29,7 +29,9 @@ class VideoSource:
     `spec` is either a path to a video file or `webcam:N` for camera index N.
     """
 
-    def __init__(self, spec: str) -> None:
+    def __init__(
+        self, spec: str, width: int | None = None, height: int | None = None
+    ) -> None:
         self._spec = spec
         self._is_live = spec.startswith("webcam:")
 
@@ -43,6 +45,10 @@ class VideoSource:
                 ) from exc
             # CAP_DSHOW avoids the multi-second MSMF open delay on Windows.
             self._capture = cv2.VideoCapture(target, cv2.CAP_DSHOW)
+            if width and height:
+                self._capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         else:
             path = Path(spec)
             if not path.exists():
@@ -70,6 +76,27 @@ class VideoSource:
     @property
     def is_live(self) -> bool:
         return self._is_live
+
+    @property
+    def paced(self) -> bool:
+        """True when the caller must throttle reads to keep real time.
+
+        A camera delivers frames at its own rate; a file hands them over as fast
+        as they can be decoded, which would make every dwell measurement
+        meaningless against the wall clock.
+        """
+        return not self._is_live
+
+    def read(self) -> np.ndarray | None:
+        """One frame, or None at end of stream. For callers driving their own loop."""
+        ok, frame = self._capture.read()
+        return frame if ok else None
+
+    def rewind(self) -> bool:
+        """Seek a file back to the start. No-op for a camera."""
+        if self._is_live:
+            return False
+        return bool(self._capture.set(cv2.CAP_PROP_POS_FRAMES, 0))
 
     def frames(self) -> Iterator[tuple[int, float, np.ndarray]]:
         index = 0

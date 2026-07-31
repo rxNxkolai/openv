@@ -88,6 +88,19 @@
   .ev .d{margin-left:auto; color:var(--accent)}
   .empty{padding:10px 12px; color:var(--dimmer); font-size:11px}
   .err{padding:8px 12px; color:#ff6b6b; font-size:11px; border-top:1px solid var(--line)}
+
+  .find{padding:7px 12px; border-top:1px solid var(--line); display:flex; gap:8px}
+  .find .sev{
+    flex:none; width:20px; text-align:center; font-weight:600;
+    letter-spacing:-.05em; padding-top:1px;
+  }
+  .find .body{min-width:0}
+  .find .txt{color:var(--fg)}
+  .find .fun{color:var(--dimmer); margin-top:2px}
+  .sev-high{color:#ff6b6b}
+  .sev-medium{color:var(--accent)}
+  .sev-low{color:var(--dimmer)}
+  .sev-none{color:var(--dimmer)}
 </style>
 </head>
 <body>
@@ -127,6 +140,14 @@
         <tbody id="ztb"></tbody>
       </table>
       <div class="empty" id="zempty">no zones. click “draw zone” and outline an area of floor.</div>
+    </section>
+
+    <section class="sec">
+      <h2>findings</h2>
+      <div id="findings"></div>
+      <div class="empty" id="findempty">
+        needs a shelf zone and enough shoppers before a rate means anything.
+      </div>
     </section>
 
     <section class="sec">
@@ -294,8 +315,22 @@ async function tick(){
     }).join('');
     document.getElementById('zempty').style.display = s.zones.length ? 'none' : 'block';
 
+    const MARK = {high:'!!', medium:'!', low:'', none:'?'};
+    document.getElementById('findings').innerHTML = (s.findings || []).map(f =>
+      `<div class="find">
+         <span class="sev sev-${f.severity}">${MARK[f.severity] ?? ''}</span>
+         <span class="body">
+           <span class="txt">${f.headline}</span>
+           <span class="fun">passed ${f.passed} &rarr; stopped ${f.stopped} &rarr; reached ${f.reached}</span>
+         </span>
+       </div>`
+    ).join('');
+    document.getElementById('findempty').style.display =
+      (s.findings || []).length ? 'none' : 'block';
+
     document.getElementById('feedList').innerHTML = s.recent.map(v =>
-      `<div class="ev"><b>#${v.track_id}</b><span>${v.zone}</span><span class="d">${v.dwell}s</span></div>`
+      `<div class="ev"><b>#${v.track_id}</b><span>${v.zone}</span>` +
+      `<span class="d">${v.kind === 'reach' ? 'reach ' : ''}${v.dwell}s</span></div>`
     ).join('');
     document.getElementById('fempty').style.display = s.recent.length ? 'none' : 'block';
   } catch (e) {

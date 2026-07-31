@@ -1,10 +1,19 @@
-"""Live capture and inference loop.
+"""Live capture, inference, and persistence.
 
-Runs on its own thread and publishes two things: the latest annotated frame as
-JPEG bytes, and a snapshot of the current numbers. HTTP handlers read those slots,
-they never trigger inference themselves. That decoupling is what keeps the browser
-smooth when inference is slower than the request rate, and stops N open tabs from
-becoming N inference loops.
+Runs on its own thread and publishes three things: the latest annotated frame as
+JPEG bytes, a snapshot of the current numbers, and the ranked findings. HTTP
+handlers read those slots, they never trigger inference themselves. That
+decoupling keeps the browser smooth when inference is slower than the request
+rate, and stops N open tabs from becoming N inference loops.
+
+Everything the engine measures goes to the same event store the offline pipeline
+writes, so a live session is analysable afterwards with exactly the same
+`patron analyze`. A console that only kept numbers in memory would be a demo, not
+an instrument.
+
+The source may be a camera or a video file. File replay is paced to the source
+framerate and loops, which makes the whole live path demonstrable and testable
+without a camera in front of it.
 
 Raw frames live only inside this loop. Nothing writes them to disk.
 """
@@ -21,11 +30,15 @@ from typing import Any
 import cv2
 import numpy as np
 
-from patron.events import VisitTracker, ZoneVisit
+from patron.events import ReachTracker, VisitTracker, ZoneSpan
 from patron.render import Renderer
+from patron.sources import VideoSource
 from patron.tracking import PersonTracker
-from patron.types import Box, FrameResult, TrackedPerson
+from patron.types import FrameResult
 from patron.zones import Zone, ZoneSet
+
+# The findings query is cheap, but recomputing it per frame would still be waste.
+FINDINGS_INTERVAL_S = 3.0
 
 
 @dataclass
@@ -42,20 +55,26 @@ class _ZoneRollup:
 class LiveEngine:
     def __init__(
         self,
-        camera: int = 0,
+        source: str = "webcam:0",
         width: int = 1280,
         height: int = 960,
         zones_path: str | Path | None = None,
+        db_path: str | Path | None = None,
         conf: float = 0.4,
         resolution: int = 896,
         variant: str = "medium",
         device: str | None = None,
+        pose: bool = False,
+        loop: bool = True,
         jpeg_quality: int = 80,
     ) -> None:
-        self.camera = camera
+        self.source_spec = source
         self.width = width
         self.height = height
         self.zones_path = Path(zones_path) if zones_path else None
+        self.db_path = Path(db_path) if db_path else None
+        self.pose_enabled = pose
+        self.loop = loop
         self.jpeg_quality = jpeg_quality
 
         self._conf = conf
@@ -75,14 +94,18 @@ class LiveEngine:
         self._seen_ids: set[int] = set()
         self._occupancy: dict[str, int] = {}
         self._rollups: dict[str, _ZoneRollup] = {}
+        self._reach_rollups: dict[str, _ZoneRollup] = {}
         self._recent: deque[dict[str, Any]] = deque(maxlen=12)
+        self._findings: list[dict[str, Any]] = []
         self._started_at = time.time()
+        self._session_id: int | None = None
 
         self._zones = ZoneSet(zones=())
         if self.zones_path and self.zones_path.exists():
             self._zones = ZoneSet.load(self.zones_path)
 
-        self._visit_tracker: VisitTracker | None = None
+        self._visits: VisitTracker | None = None
+        self._reaches: ReachTracker | None = None
         self._renderer: Renderer | None = None
 
     # ---------------- lifecycle ----------------
@@ -94,7 +117,7 @@ class LiveEngine:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=10)
 
     # ---------------- published state ----------------
 
@@ -104,25 +127,37 @@ class LiveEngine:
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
+            # Enumerate the *configured* zones, not just the ones that have
+            # accumulated a span. A zone the operator just drew must appear
+            # immediately at zero, otherwise there is no way to tell a zone that
+            # registered from one that silently failed to.
+            counts = {**self._rollups, **self._reach_rollups}
             zones = [
                 {
-                    "name": name,
-                    "inside": self._occupancy.get(name, 0),
-                    "visits": rollup.visits,
-                    "shoppers": len(rollup.shoppers),
-                    "mean_dwell": round(rollup.mean_dwell, 1),
+                    "name": zone.name,
+                    "kind": zone.kind,
+                    "inside": self._occupancy.get(zone.name, 0),
+                    "visits": counts[zone.name].visits if zone.name in counts else 0,
+                    "shoppers": len(counts[zone.name].shoppers) if zone.name in counts else 0,
+                    "mean_dwell": round(counts[zone.name].mean_dwell, 1)
+                    if zone.name in counts
+                    else 0.0,
                 }
-                for name, rollup in self._rollups.items()
+                for zone in self._zones
             ]
             return {
                 "running": self._thread is not None and self._thread.is_alive(),
                 "error": self._error,
+                "source": self.source_spec,
+                "pose": self.pose_enabled,
+                "session_id": self._session_id,
                 "fps": round(self._fps, 1),
                 "people_now": self._people_now,
                 "shoppers_total": len(self._seen_ids),
                 "uptime_s": int(time.time() - self._started_at),
                 "zones": zones,
                 "recent": list(self._recent),
+                "findings": list(self._findings),
             }
 
     def zones_payload(self) -> dict[str, Any]:
@@ -147,17 +182,20 @@ class LiveEngine:
                 Zone(
                     name=z["name"],
                     polygon=tuple((float(x), float(y)) for x, y in z["polygon"]),
-                    kind=z.get("kind", "shelf"),
+                    kind=z.get("kind", "floor"),
                 )
                 for z in raw_zones
             )
         )
         with self._lock:
             self._zones = zones
-            self._rollups = {name: _ZoneRollup() for name in zones.names}
+            self._rollups = {}
+            self._reach_rollups = {}
             self._occupancy = {}
             self._recent.clear()
-            self._visit_tracker = None  # rebuilt on the next frame
+            self._findings = []
+            self._visits = None  # rebuilt on the next frame
+            self._reaches = None
             self._renderer = None
         if self.zones_path:
             zones.save(self.zones_path)
@@ -165,17 +203,15 @@ class LiveEngine:
     # ---------------- the loop ----------------
 
     def _run(self) -> None:
-        cap = cv2.VideoCapture(self.camera, cv2.CAP_DSHOW)
-        if not cap.isOpened():
+        try:
+            source = VideoSource(self.source_spec, width=self.width, height=self.height)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the browser
             with self._lock:
-                self._error = f"could not open camera {self.camera}"
+                self._error = f"could not open {self.source_spec}: {exc}"
             return
 
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        self.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.width, self.height = source.info.width, source.info.height
+        fps = source.info.fps
 
         try:
             from patron.detectors import RFDETRPersonDetector
@@ -186,81 +222,174 @@ class LiveEngine:
                 device=self._device,
                 resolution=self._resolution,
             )
+            pose_estimator = None
+            if self.pose_enabled:
+                from patron.pose import PoseEstimator
+
+                pose_estimator = PoseEstimator()
         except Exception as exc:  # noqa: BLE001 - surfaced to the browser
             with self._lock:
-                self._error = f"detector failed to load: {exc}"
-            cap.release()
+                self._error = f"model failed to load: {exc}"
+            source.release()
             return
 
-        # Camera fps is measured, not trusted, for the same reason the recorder
-        # measures it: a wrong rate silently scales every dwell time.
-        for _ in range(10):
-            cap.read()
-        warm_start = time.perf_counter()
-        for _ in range(20):
-            cap.read()
-        capture_fps = max(1.0, 20 / (time.perf_counter() - warm_start))
+        store = None
+        if self.db_path is not None:
+            from patron.store import EventStore
 
-        tracker = PersonTracker(fps=capture_fps, algorithm="bytetrack")
+            store = EventStore(self.db_path)
+            session_id = store.start_session(
+                source=self.source_spec, fps=fps, width=self.width, height=self.height
+            )
+            with self._lock:
+                self._session_id = session_id
+
+        tracker = PersonTracker(fps=fps, algorithm="bytetrack")
         frame_index = 0
+        last_findings = 0.0
+        frame_budget = 1.0 / fps if source.paced else 0.0
 
         try:
             while not self._stop.is_set():
                 loop_start = time.perf_counter()
-                ok, frame = cap.read()
-                if not ok:
-                    with self._lock:
-                        self._error = "camera stopped delivering frames"
-                    break
+                frame = source.read()
+
+                if frame is None:
+                    if source.is_live or not self.loop:
+                        break
+                    # A file ran out. Rewind and carry on: the console is a live
+                    # instrument, and a demo that stops after 30 seconds is not one.
+                    source.rewind()
+                    tracker = PersonTracker(fps=fps, algorithm="bytetrack")
+                    self._close_open_spans(store)
+                    frame_index = 0
+                    continue
 
                 detections = detector.detect(frame)
                 people = tracker.update(detections, frame)
+                poses = (
+                    pose_estimator.estimate(frame, people)
+                    if pose_estimator is not None
+                    else {}
+                )
                 result = FrameResult(
                     frame_index=frame_index,
-                    timestamp_s=frame_index / capture_fps,
+                    timestamp_s=frame_index / fps,
                     people=people,
+                    poses=poses,
                 )
 
-                self._consume(result, frame, capture_fps)
+                self._consume(result, frame, fps, store)
                 frame_index += 1
 
-                self._fps_window.append(time.perf_counter() - loop_start)
-                if self._fps_window:
-                    mean = sum(self._fps_window) / len(self._fps_window)
-                    with self._lock:
-                        self._fps = 1.0 / mean if mean > 0 else 0.0
-        finally:
-            cap.release()
+                now = time.perf_counter()
+                self._fps_window.append(now - loop_start)
+                mean = sum(self._fps_window) / len(self._fps_window)
+                with self._lock:
+                    self._fps = 1.0 / mean if mean > 0 else 0.0
 
-    def _consume(self, result: FrameResult, frame: np.ndarray, fps: float) -> None:
+                if store is not None and time.time() - last_findings > FINDINGS_INTERVAL_S:
+                    self._refresh_findings(store)
+                    last_findings = time.time()
+
+                # Replaying a file faster than real time would make every dwell
+                # measurement meaningless relative to the wall clock the viewer
+                # is watching against.
+                if frame_budget:
+                    slack = frame_budget - (time.perf_counter() - loop_start)
+                    if slack > 0:
+                        time.sleep(slack)
+        finally:
+            self._close_open_spans(store)
+            if store is not None:
+                self._refresh_findings(store)
+                store.close()
+            source.release()
+
+    def _close_open_spans(self, store) -> None:
+        """Flush anyone still inside a zone so they reach the numbers."""
+        with self._lock:
+            visits, reaches, session_id = self._visits, self._reaches, self._session_id
+
+        spans: list[ZoneSpan] = visits.flush() if visits is not None else []
+        reach_spans: list[ZoneSpan] = reaches.flush() if reaches is not None else []
+
+        if store is not None and session_id is not None:
+            store.add_visits(session_id, spans)
+            store.add_reaches(session_id, reach_spans)
+        self._record(spans, reach_spans)
+
+        with self._lock:
+            self._visits = None
+            self._reaches = None
+
+    def _refresh_findings(self, store) -> None:
+        from patron.analysis import analyze
+
+        with self._lock:
+            session_id = self._session_id
+        try:
+            analysis = analyze(store, session_id)
+        except Exception:  # noqa: BLE001 - never let reporting kill capture
+            return
+
+        payload = [
+            {
+                "zone": f.zone,
+                "kind": f.kind,
+                "severity": f.severity,
+                "headline": f.headline,
+                "passed": f.funnel.passed,
+                "stopped": f.funnel.stopped,
+                "reached": f.funnel.reached,
+            }
+            for f in analysis.findings
+        ]
+        with self._lock:
+            self._findings = payload
+
+    def _consume(self, result: FrameResult, frame: np.ndarray, fps: float, store) -> None:
         with self._lock:
             zones = self._zones
-            if self._visit_tracker is None and len(zones):
-                self._visit_tracker = VisitTracker(
+            session_id = self._session_id
+            if self._visits is None and len(zones.floor):
+                self._visits = VisitTracker(
                     zones=zones,
                     fps=fps,
                     min_frames_inside=max(1, round(0.2 * fps)),
                     min_frames_outside=max(1, round(0.5 * fps)),
                     track_timeout_frames=max(1, round(1.5 * fps)),
                 )
-                self._rollups = {name: _ZoneRollup() for name in zones.names}
+            if self._reaches is None and len(zones.shelf) and self.pose_enabled:
+                self._reaches = ReachTracker(zones=zones, fps=fps)
             if self._renderer is None:
                 self._renderer = Renderer(
                     resolution_wh=(self.width, self.height),
                     draw_traces=True,
                     zones=zones if len(zones) else None,
                 )
-            visit_tracker = self._visit_tracker
-            renderer = self._renderer
+            visits, reaches, renderer = self._visits, self._reaches, self._renderer
 
-        completed: list[ZoneVisit] = []
-        if visit_tracker is not None:
-            completed = visit_tracker.update(result)
+        done_visits = visits.update(result) if visits is not None else []
+        done_reaches = (
+            reaches.update(result, dict(result.poses)) if reaches is not None else []
+        )
+
+        if store is not None and session_id is not None:
+            if done_visits:
+                store.add_visits(session_id, done_visits)
+            if done_reaches:
+                store.add_reaches(session_id, done_reaches)
 
         occupancy: dict[str, int] = {}
         for person in result.people:
-            for name in zones.containing(person.box.foot_point):
+            for name in zones.floor.containing(person.box.foot_point):
                 occupancy[name] = occupancy.get(name, 0) + 1
+            pose = result.poses.get(person.track_id)
+            if pose is not None:
+                for wrist in pose.wrists():
+                    for name in zones.shelf.containing(wrist):
+                        occupancy[name] = occupancy.get(name, 0) + 1
 
         canvas = renderer.annotate(frame, result)
         ok, buffer = cv2.imencode(
@@ -271,20 +400,29 @@ class LiveEngine:
             self._people_now = result.count
             self._seen_ids.update(p.track_id for p in result.people)
             self._occupancy = occupancy
-            for visit in completed:
-                rollup = self._rollups.setdefault(visit.zone, _ZoneRollup())
-                rollup.visits += 1
-                rollup.total_dwell += visit.dwell_s
-                rollup.shoppers.add(visit.track_id)
-                self._recent.appendleft(
-                    {
-                        "track_id": visit.track_id,
-                        "zone": visit.zone,
-                        "dwell": round(visit.dwell_s, 1),
-                    }
-                )
             if ok:
                 self._jpeg = buffer.tobytes()
 
+        self._record(done_visits, done_reaches)
 
-__all__ = ["LiveEngine", "Box", "TrackedPerson"]
+    def _record(self, visits: list[ZoneSpan], reaches: list[ZoneSpan]) -> None:
+        with self._lock:
+            for span, bucket, label in (
+                *((v, self._rollups, "visit") for v in visits),
+                *((r, self._reach_rollups, "reach") for r in reaches),
+            ):
+                rollup = bucket.setdefault(span.zone, _ZoneRollup())
+                rollup.visits += 1
+                rollup.total_dwell += span.dwell_s
+                rollup.shoppers.add(span.track_id)
+                self._recent.appendleft(
+                    {
+                        "track_id": span.track_id,
+                        "zone": span.zone,
+                        "dwell": round(span.dwell_s, 1),
+                        "kind": label,
+                    }
+                )
+
+
+__all__ = ["LiveEngine"]

@@ -316,21 +316,37 @@ def _cmd_live(args: argparse.Namespace) -> int:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     engine = LiveEngine(
-        camera=args.camera,
+        source=args.source,
         width=args.width,
         height=args.height,
         zones_path=args.zones,
+        db_path=None if args.no_db else args.db,
         conf=args.conf,
         resolution=args.resolution,
         variant=args.variant,
         device=device,
+        pose=args.pose,
+        loop=not args.no_loop,
     )
     app = create_app(engine)
 
     url = f"http://127.0.0.1:{args.port}"
-    print(f"camera   {args.camera} at {args.width}x{args.height}")
+    print(f"source   {args.source}")
     print(f"model    RF-DETR {args.variant} @ {args.resolution}px on {device}")
+    print(f"pose     {'on' if args.pose else 'off'}")
     print(f"zones    {args.zones}")
+    print(f"db       {'disabled' if args.no_db else args.db}")
+
+    replaying_file = not args.source.startswith("webcam:")
+    if replaying_file and not args.no_loop and not args.no_db:
+        # Every loop re-measures the same shoppers, so a persisted funnel from a
+        # looping replay counts them once per pass. Fine for a demo, meaningless
+        # as a measurement, and silence here would produce confident nonsense.
+        print(
+            "\nwarning  looping a file into the event store double-counts shoppers"
+            "\n         on every pass. Use --no-loop to measure, or --no-db to demo."
+        )
+
     print(f"\nopen     {url}\n")
     print("draw zones by clicking on the video. ctrl-c here to stop.\n")
 
@@ -723,8 +739,24 @@ def main(argv: list[str] | None = None) -> int:
     track.set_defaults(func=_cmd_track)
 
     live = sub.add_parser("live", help="live console in the browser")
-    live.add_argument("--camera", type=int, default=0, help="camera index")
+    live.add_argument(
+        "--source",
+        default="webcam:0",
+        help="webcam:N, or a video file to replay (looped, paced to real time)",
+    )
     live.add_argument("--port", type=int, default=8000)
+    live.add_argument(
+        "--pose", action="store_true", help="enable reach detection on shelf zones"
+    )
+    live.add_argument(
+        "--db", default="out/patron.db", help="event store for the live session"
+    )
+    live.add_argument(
+        "--no-db", action="store_true", help="do not persist, numbers vanish on exit"
+    )
+    live.add_argument(
+        "--no-loop", action="store_true", help="stop at the end of a video file"
+    )
     live.add_argument(
         "--zones", default="data/live.zones.json", help="zone file, created if missing"
     )

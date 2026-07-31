@@ -42,11 +42,32 @@ uv run patron track webcam:0 --show
 ## Live console
 
 Camera in, overlay and running numbers in the browser. Draw zones by clicking on
-the video.
+the video. Everything it measures goes to the same event store the offline
+pipeline writes, so a live session is analysable afterwards with the same
+`patron analyze`.
 
 ```bash
-uv run patron live
+uv run patron live --pose
 ```
+
+The source can be a video file instead of a camera. File replay loops and is paced
+to the source framerate, so the whole live path is demonstrable and testable with
+no camera in front of it:
+
+```bash
+uv run patron live --source data/grocery-store.mp4 --zones data/grocery.zones.json --pose
+```
+
+Pacing matters: replaying a file as fast as it decodes would make every dwell
+number meaningless against the clock the viewer is watching.
+
+| Flag | What it does |
+|---|---|
+| `--source` | `webcam:N`, or a video file to replay |
+| `--pose` | enable reach detection on shelf zones |
+| `--db PATH` | event store for the session (default `out/patron.db`) |
+| `--no-db` | do not persist; numbers vanish on exit |
+| `--no-loop` | stop at the end of a video file instead of rewinding |
 
 Opens `http://127.0.0.1:8000`. The capture and inference loop runs on its own
 thread and publishes the latest annotated frame plus a stats snapshot; HTTP

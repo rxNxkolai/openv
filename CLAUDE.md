@@ -58,7 +58,15 @@ membership is always computed on the floor plane.
 - **M1** zone polygons, visit records with dwell, per-zone funnel  (done, SQLite)
 - **M2** pose and reach detection  (done, pending true-positive validation on real footage)
 - **M3** analysis + agent, diagnosis and recommendation  (done, agent path unrun)
-- **M4** live camera end to end  <- next
+- **M4** live camera end to end  (done for the software path; unrun on a real
+  fixed camera, which is the outstanding gate)
+
+`patron live` writes to the same event store the offline pipeline does, so a live
+session is analysable afterwards with the same `patron analyze`. It also accepts a
+video file as its source, which is what makes the live path testable and demoable
+with no camera present. **Looping a file into the event store double-counts
+shoppers on every pass** — fine for a demo, meaningless as a measurement, and the
+CLI warns rather than producing confident nonsense.
 
 **The agent never computes and never executes.** `analysis.py` computes every number
 deterministically and `agent.py` only writes prose over the result. A model doing
