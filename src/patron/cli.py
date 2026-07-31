@@ -195,6 +195,106 @@ def _cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_bench_trackers(args: argparse.Namespace) -> int:
+    """Compare trackers on identical detections.
+
+    Tracker choice is the open accuracy question: a shopper who is occluded and
+    reacquired gets a fresh id, so COUNT(DISTINCT track_id) overcounts people.
+    Re-running detection per tracker would make the comparison unfair and slow,
+    so detection runs once and every tracker replays the same cached frames.
+    """
+    import time
+
+    import cv2
+
+    from patron.detectors import RFDETRPersonDetector
+    from patron.sources import VideoSource
+    from patron.tracking import ALGORITHMS, PersonTracker
+
+    algorithms = [a.strip() for a in args.trackers.split(",") if a.strip()]
+    unknown = [a for a in algorithms if a not in ALGORITHMS]
+    if unknown:
+        print(f"error: unknown tracker(s) {unknown}. Known: {sorted(ALGORITHMS)}", file=sys.stderr)
+        return 1
+
+    device = args.device
+    if device is None:
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    with VideoSource(args.source) as source:
+        info = source.info
+        print(f"source   {args.source}  {info.width}x{info.height} @ {info.fps:.1f}fps")
+        print(f"frames   {args.frames}")
+        print(f"detect   RF-DETR {args.variant} @ {args.resolution}px"
+              + (f", tiled @ {args.slice}px" if args.slice else ""))
+
+        detector = RFDETRPersonDetector(
+            variant=args.variant,
+            confidence=args.conf,
+            device=device,
+            resolution=args.resolution,
+            slice_size=args.slice,
+        )
+
+        print("\ndetecting once (shared by every tracker)...")
+        cached: list = []
+        started = time.perf_counter()
+        for index, _ts, frame in source.frames():
+            if index >= args.frames:
+                break
+            detections = detector.detect(frame)
+            # Keep a small frame: BoT-SORT uses it for camera motion compensation,
+            # and motion is scale-relative so a downscale is still valid.
+            small = cv2.resize(frame, (640, int(640 * info.height / info.width)))
+            cached.append((detections, small))
+            if (index + 1) % 10 == 0:
+                rate = (index + 1) / (time.perf_counter() - started)
+                print(f"  {index + 1}/{args.frames}  {rate:.1f} fps", end="\r", flush=True)
+
+    if not cached:
+        print("\nerror: no frames decoded", file=sys.stderr)
+        return 1
+
+    per_frame = [len(d) for d, _ in cached]
+    mean_people = sum(per_frame) / len(per_frame)
+    print(f"\n\ncached {len(cached)} frames, {mean_people:.1f} detections/frame mean\n")
+
+    header = f"{'tracker':<12}{'unique ids':>11}{'mean/frame':>12}{'churn':>8}{'time':>9}"
+    print(header)
+    print("-" * len(header))
+
+    results = []
+    for algorithm in algorithms:
+        tracker = PersonTracker(fps=info.fps, algorithm=algorithm)
+        seen: set[int] = set()
+        counts: list[int] = []
+        started = time.perf_counter()
+        for detections, frame in cached:
+            people = tracker.update(detections, frame)
+            seen.update(p.track_id for p in people)
+            counts.append(len(people))
+        elapsed = time.perf_counter() - started
+
+        mean_tracked = sum(counts) / len(counts) if counts else 0.0
+        # Churn: unique ids per person visible at any instant. A tracker that
+        # never loses anyone approaches the number of people who genuinely
+        # entered and left; one that fragments climbs above it.
+        churn = len(seen) / mean_tracked if mean_tracked else float("inf")
+        results.append((algorithm, len(seen), mean_tracked, churn, elapsed))
+        print(
+            f"{algorithm:<12}{len(seen):>11}{mean_tracked:>12.1f}"
+            f"{churn:>8.2f}{elapsed:>8.1f}s"
+        )
+
+    best = min(results, key=lambda r: r[3])
+    print(f"\nlowest churn: {best[0]} ({best[3]:.2f} ids per visible person)")
+    print("Lower is better. Same detections for every tracker, so the difference")
+    print("is association only, not detection.")
+    return 0
+
+
 def _load_analysis(args: argparse.Namespace):
     from patron.analysis import analyze
     from patron.store import EventStore
@@ -806,6 +906,23 @@ def main(argv: list[str] | None = None) -> int:
         "--all-sessions", action="store_true", help="aggregate across every session"
     )
     report.set_defaults(func=_cmd_report)
+
+    bench = sub.add_parser(
+        "bench-trackers", help="compare trackers on identical cached detections"
+    )
+    bench.add_argument("source", help="video file")
+    bench.add_argument("--frames", type=int, default=120)
+    bench.add_argument(
+        "--trackers", default="bytetrack,botsort,ocsort,sort", help="comma separated"
+    )
+    bench.add_argument("--slice", type=int, metavar="PX", help="tiled inference")
+    bench.add_argument("--resolution", type=int, default=896)
+    bench.add_argument("--conf", type=float, default=0.4)
+    bench.add_argument(
+        "--variant", default="medium", choices=["nano", "small", "medium", "large"]
+    )
+    bench.add_argument("--device", choices=["cuda", "cpu"])
+    bench.set_defaults(func=_cmd_bench_trackers)
 
     analyze_p = sub.add_parser(
         "analyze", help="funnel analysis and ranked findings (no model needed)"
