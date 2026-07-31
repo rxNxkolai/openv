@@ -160,7 +160,8 @@ def _assess(funnel: ZoneFunnel, median_reach: float | None) -> Finding:
             kind="insufficient_data",
             severity="none",
             headline=(
-                f"{funnel.shelf_zone}: only {funnel.passed} shoppers observed, "
+                f"{funnel.shelf_zone}: only {funnel.passed} "
+                f"shopper{'' if funnel.passed == 1 else 's'} observed, "
                 f"below the {MIN_SHOPPERS_FOR_CONFIDENCE} needed to call a rate"
             ),
             funnel=funnel,
