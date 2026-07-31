@@ -29,6 +29,32 @@ from dataclasses import dataclass, field
 from patron.types import FrameResult, Pose
 from patron.zones import ZoneSet
 
+# Wrist-to-shoulder distance, in units of the shopper's own shoulder width, before
+# a hand inside a shelf zone counts as engagement.
+#
+# Tuned against tests/fixtures/reach_poses.json, which holds real keypoints from
+# one genuine reach and three trolley-push episodes. On that fixture the genuine
+# reach measures 2.59 to 2.84 and the trolley pushes top out at 2.49. The midpoint
+# is 2.54. Rounded down, because the project would rather miss a reach than invent
+# one. That is a single reach episode by a single shopper, so treat this number as
+# provisional until more footage exists.
+DEFAULT_MIN_ARM_EXTENSION = 2.5
+
+# Apparent shoulder width is the denominator of the extension ratio, and it
+# collapses toward zero when a shopper turns side-on to the camera: the two
+# shoulders project onto each other. That sends the ratio to infinity and lets a
+# hand resting on a trolley handle through as a reach. Flooring the denominator at
+# a fraction of the shopper's own height fixes it, because standing height barely
+# moves with rotation. Adult shoulder breadth runs about 0.23 of stature, so this
+# floor engages only once the torso is clearly foreshortened.
+SHOULDER_WIDTH_FLOOR = 0.20
+
+# A body running off the edge of the frame has a truncated box, so its height is
+# wrong and part of its torso is simply not there. Both inputs to the extension
+# test are unreliable, so those frames are treated as no evidence rather than as
+# no reach.
+FRAME_EDGE_MARGIN_PX = 8
+
 
 @dataclass(frozen=True)
 class ZoneSpan:
@@ -244,11 +270,15 @@ class ReachTracker:
         min_frames_outside: int = 3,
         track_timeout_frames: int = 45,
         min_wrist_confidence: float = 0.5,
-        min_arm_extension: float = 1.6,
+        min_arm_extension: float = DEFAULT_MIN_ARM_EXTENSION,
+        frame_size: tuple[int, int] | None = None,
     ) -> None:
         self.zones = zones.shelf
         self.min_wrist_confidence = min_wrist_confidence
         self.min_arm_extension = min_arm_extension
+        # Without the frame size there is no way to tell a body at the edge of
+        # the view from one in the middle, so the check simply does not run.
+        self.frame_size = frame_size
         # Reaches are shorter and sharper than visits, so the debounce is tighter.
         # A shopper picking something up may have a hand in the shelf for well
         # under a second.
@@ -272,10 +302,17 @@ class ReachTracker:
                 # than ending a reach on missing evidence.
                 continue
 
+            if self._is_clipped(person.box):
+                # Same treatment as a missing pose: no usable evidence this
+                # frame, so leave the streaks alone rather than ending a reach.
+                continue
+
             inside: set[str] = set()
             for side in ("left", "right"):
                 wrist = pose.get(f"{side}_wrist", self.min_wrist_confidence)
-                if wrist is None or not self._is_extended(pose, side, wrist):
+                if wrist is None or not self._is_extended(
+                    pose, side, wrist, person.box.height
+                ):
                     continue
                 inside.update(self.zones.containing(wrist))
             membership[person.track_id] = inside
@@ -284,8 +321,18 @@ class ReachTracker:
             result.frame_index, result.timestamp_s, membership, visible
         )
 
+    def _is_clipped(self, box) -> bool:
+        """Is this body running off the edge of the frame?"""
+        if self.frame_size is None:
+            return False
+        width, height = self.frame_size
+        m = FRAME_EDGE_MARGIN_PX
+        return (
+            box.x1 <= m or box.y1 <= m or box.x2 >= width - m or box.y2 >= height - m
+        )
+
     def _is_extended(
-        self, pose: Pose, side: str, wrist: tuple[float, float]
+        self, pose: Pose, side: str, wrist: tuple[float, float], body_height: float
     ) -> bool:
         """Is the arm actually reaching, or is the hand just resting near the body?
 
@@ -298,6 +345,12 @@ class ReachTracker:
         Arm extension separates the two: the wrist-to-shoulder distance is measured
         in units of the shopper's own shoulder width, so it does not depend on how
         far away they are or how big they appear.
+
+        It does, however, depend on which way they are facing, which is why the
+        denominator is floored. A shopper side-on to the camera projects almost no
+        shoulder width at all, and the raw ratio then passes a hand resting on a
+        trolley handle. Measured on real footage: the same trolley grip scored 1.3
+        while the shopper faced the camera and 4.1 once they turned side-on.
         """
         if self.min_arm_extension <= 0:
             return True
@@ -309,7 +362,11 @@ class ReachTracker:
             # possible reach on missing evidence.
             return True
 
-        shoulder_width = math.dist(left, right)
+        # Floored, because apparent shoulder width collapses under body rotation
+        # and an uncorrected ratio then passes anything. See SHOULDER_WIDTH_FLOOR.
+        shoulder_width = max(
+            math.dist(left, right), SHOULDER_WIDTH_FLOOR * max(body_height, 0.0)
+        )
         if shoulder_width < 1e-6:
             return True
 

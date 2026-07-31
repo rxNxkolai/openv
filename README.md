@@ -226,11 +226,27 @@ who never touched anything.
 The fix is arm extension: wrist-to-shoulder distance measured in units of the
 shopper's own shoulder width, so it holds regardless of how far away they are. A
 resting hand sits near the body; a reach extends. `--min-arm-extension` tunes it,
-default 1.6, and 0 disables the check.
+default 2.5, and 0 disables the check.
 
-Measured: on a clip where the shopper only ever pushed a trolley, this took the
-count from 2 reaches to 0. True-positive validation on real footage is still
-outstanding and needs a clip of someone actually reaching into a shelf.
+That ratio has one failure mode worth knowing about. Apparent shoulder width is
+the denominator, and it collapses when a shopper turns side-on to the camera,
+because the two shoulders project onto each other. The ratio then runs away and
+passes anything. Measured on real footage: one shopper's hand never left the
+trolley handle, yet scored 1.3 facing the camera and 4.1 once they turned. So the
+denominator is floored at 0.20 of the shopper's own standing height, which barely
+moves with rotation. Bodies running off the edge of the frame are skipped
+entirely, since a truncated box has the wrong height and half a torso.
+
+Measured on `grocery-store.mp4`, which contains one genuine reach and three
+trolley-push stretches: **7 reaches before, 1 after, and the survivor is the real
+one.** Both halves of that are now pinned by `tests/test_reach_fixture.py`, which
+runs the detector against real MediaPipe keypoints recorded from those frames
+rather than hand-built poses. Reintroducing any one of the three fixes
+misclassifies between 1 and 15 frames.
+
+The threshold rests on a single reach episode by a single shopper, so treat 2.5
+as provisional. More footage should retune it, and the fixture is there to make
+that a measurement rather than a guess.
 
 ### Useful flags
 
@@ -244,6 +260,7 @@ outstanding and needs a clip of someone actually reaching into a shelf.
 | `--resolution PX` | detector input size, default 896, must be divisible by 32 |
 | `--slice PX` | tiled inference, for wide or high camera mounts |
 | `--tracker NAME` | `bytetrack` (default), `botsort`, `ocsort`, `sort` |
+| `--min-arm-extension` | reach threshold in shoulder widths, default 2.5, 0 disables |
 | `--no-trace` | turn off the path trails |
 | `--no-half` | disable fp16 |
 

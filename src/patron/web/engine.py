@@ -30,12 +30,17 @@ from typing import Any
 import cv2
 import numpy as np
 
-from patron.events import ReachTracker, VisitTracker, ZoneSpan
+from patron.events import (
+    DEFAULT_MIN_ARM_EXTENSION,
+    ReachTracker,
+    VisitTracker,
+    ZoneSpan,
+)
 from patron.render import Renderer
 from patron.sources import VideoSource
 from patron.tracking import PersonTracker
 from patron.types import FrameResult
-from patron.zones import Zone, ZoneSet
+from patron.zones import FLOOR_KIND, Zone, ZoneSet
 
 # The findings query is cheap, but recomputing it per frame would still be waste.
 FINDINGS_INTERVAL_S = 3.0
@@ -67,6 +72,7 @@ class LiveEngine:
         pose: bool = False,
         loop: bool = True,
         jpeg_quality: int = 80,
+        min_arm_extension: float = DEFAULT_MIN_ARM_EXTENSION,
     ) -> None:
         self.source_spec = source
         self.width = width
@@ -76,6 +82,7 @@ class LiveEngine:
         self.pose_enabled = pose
         self.loop = loop
         self.jpeg_quality = jpeg_quality
+        self.min_arm_extension = min_arm_extension
 
         self._conf = conf
         self._resolution = resolution
@@ -182,7 +189,7 @@ class LiveEngine:
                 Zone(
                     name=z["name"],
                     polygon=tuple((float(x), float(y)) for x, y in z["polygon"]),
-                    kind=z.get("kind", "floor"),
+                    kind=z.get("kind", FLOOR_KIND),
                 )
                 for z in raw_zones
             )
@@ -361,7 +368,12 @@ class LiveEngine:
                     track_timeout_frames=max(1, round(1.5 * fps)),
                 )
             if self._reaches is None and len(zones.shelf) and self.pose_enabled:
-                self._reaches = ReachTracker(zones=zones, fps=fps)
+                self._reaches = ReachTracker(
+                    zones=zones,
+                    fps=fps,
+                    min_arm_extension=self.min_arm_extension,
+                    frame_size=(self.width, self.height),
+                )
             if self._renderer is None:
                 self._renderer = Renderer(
                     resolution_wh=(self.width, self.height),

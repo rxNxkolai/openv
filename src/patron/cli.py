@@ -89,7 +89,12 @@ def _cmd_track(args: argparse.Namespace) -> int:
                 track_timeout_frames=max(1, round(args.lost_seconds * info.fps)),
             )
             if pose_estimator is not None and len(zones.shelf):
-                reach_tracker = ReachTracker(zones=zones, fps=info.fps)
+                reach_tracker = ReachTracker(
+                    zones=zones,
+                    fps=info.fps,
+                    min_arm_extension=args.min_arm_extension,
+                    frame_size=(info.width, info.height),
+                )
 
             store = EventStore(args.db)
             session_id = store.start_session(
@@ -442,6 +447,7 @@ def _cmd_live(args: argparse.Namespace) -> int:
         device=device,
         pose=args.pose,
         loop=not args.no_loop,
+        min_arm_extension=args.min_arm_extension,
     )
     app = create_app(engine)
 
@@ -633,8 +639,11 @@ def _print_summary(db_path: str, session_id: int | None) -> None:
             )
         print("\na reach is a hand inside a shelf zone: engagement, not just presence.")
     elif rows:
-        print("\nno shelf zones drawn, so no reach data. Draw a zone of kind 'shelf'")
-        print("over the shelf face and run with --pose to get the engagement half.")
+        # The store holds visits and reaches, not the zone set, so zero reach rows
+        # cannot distinguish "no shelf zone drawn" from "no hand entered one".
+        # Claiming the first is how you get sent off to redraw zones that are fine.
+        print("\nno reaches recorded. Either no zone of kind 'shelf' was drawn over")
+        print("the shelf face, or no hand entered one. Shelf zones also need --pose.")
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
@@ -658,7 +667,7 @@ def _cmd_zones(args: argparse.Namespace) -> int:
     import cv2
     import numpy as np
 
-    from patron.zones import Zone, ZoneSet
+    from patron.zones import FLOOR_KIND, SHELF_KIND, Zone, ZoneSet
 
     cap = cv2.VideoCapture(args.source)
     if not cap.isOpened():
@@ -694,10 +703,13 @@ def _cmd_zones(args: argparse.Namespace) -> int:
         canvas = view.copy()
         for i, zone in enumerate(zones):
             pts = (np.array(zone.polygon) * scale).astype(np.int32)
-            cv2.polylines(canvas, [pts], True, (255, 128, 0), 2)
+            # Shelf and floor zones are drawn in different colours because the
+            # two are indistinguishable by shape and mixing them up is silent.
+            colour = (0, 200, 255) if zone.is_shelf else (255, 128, 0)
+            cv2.polylines(canvas, [pts], True, colour, 2)
             cv2.putText(
-                canvas, zone.name, tuple(pts.min(axis=0) + [4, -6]),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 128, 0), 2, cv2.LINE_AA,
+                canvas, f"{zone.name} ({zone.kind})", tuple(pts.min(axis=0) + [4, -6]),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2, cv2.LINE_AA,
             )
         if points:
             cv2.polylines(canvas, [np.array(points, np.int32)], False, (0, 255, 255), 2)
@@ -724,14 +736,20 @@ def _cmd_zones(args: argparse.Namespace) -> int:
             if not name:
                 print("skipped, no name given")
                 continue
+            # Kind has to be chosen at draw time. It decides whether the polygon
+            # is tested against wrists or foot points, and getting it wrong is
+            # not visible later: the zone simply reports nothing.
+            answer = input(f"kind, blank for {FLOOR_KIND}, s for {SHELF_KIND}: ")
+            kind = SHELF_KIND if answer.strip().lower() in ("s", SHELF_KIND) else FLOOR_KIND
             zones.append(
                 Zone(
                     name=name,
                     polygon=tuple((x / scale, y / scale) for x, y in points),
+                    kind=kind,
                 )
             )
             points.clear()
-            print(f"added {name}")
+            print(f"added {name} ({kind})")
         elif key == ord("s"):
             break
         elif key == ord("q"):
@@ -829,6 +847,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run pose estimation, needed for reach detection on shelf zones",
     )
+    # Spelled out rather than imported from events.DEFAULT_MIN_ARM_EXTENSION:
+    # patron.events costs ~670ms to import and that would land on every
+    # `patron --help`. The CLI always passes this through explicitly, so the
+    # constructor default only applies to direct API use.
+    track.add_argument(
+        "--min-arm-extension",
+        type=float,
+        default=2.5,
+        help="wrist-to-shoulder distance, in shoulder widths, before a hand in a "
+        "shelf zone counts as a reach. 0 disables the check (default: 2.5)",
+    )
     track.add_argument("--zones", help="zones.json, enables visit capture")
     track.add_argument(
         "--db", default="out/patron.db", help="event store path (default: out/patron.db)"
@@ -862,6 +891,13 @@ def main(argv: list[str] | None = None) -> int:
     live.add_argument("--port", type=int, default=8000)
     live.add_argument(
         "--pose", action="store_true", help="enable reach detection on shelf zones"
+    )
+    live.add_argument(
+        "--min-arm-extension",
+        type=float,
+        default=2.5,
+        help="wrist-to-shoulder distance, in shoulder widths, before a hand in a "
+        "shelf zone counts as a reach. 0 disables the check (default: 2.5)",
     )
     live.add_argument(
         "--db", default="out/patron.db", help="event store for the live session"

@@ -56,7 +56,7 @@ membership is always computed on the floor plane.
 
 - **M0** video in, people detected, stable track IDs out  (done)
 - **M1** zone polygons, visit records with dwell, per-zone funnel  (done, SQLite)
-- **M2** pose and reach detection  (done, pending true-positive validation on real footage)
+- **M2** pose and reach detection  (done, true-positive validated on real footage)
 - **M3** analysis + agent, diagnosis and recommendation  (done, agent path unrun)
 - **M4** live camera end to end  (done for the software path; unrun on a real
   fixed camera, which is the outstanding gate)
@@ -89,9 +89,22 @@ debounce and backdating logic is written and tested once.
 **A flat shelf zone cannot tell a hand at the shelf from a hand between the camera
 and the shelf.** A shopper pushing a trolley registers inside the polygon with both
 hands. Arm extension (wrist-to-shoulder distance in units of shoulder width) is what
-separates them, and it is why `min_arm_extension` exists. Verified: it took a real
-clip from 2 false reaches to 0. True-positive validation still needs footage of
-someone actually reaching into a shelf.
+separates them, and it is why `min_arm_extension` exists.
+
+Arm extension divides by **apparent** shoulder width, which collapses when a shopper
+turns side-on, so the raw ratio runs away and passes a hand on a trolley handle. The
+same grip measured 1.3 facing the camera and 4.1 in profile. Three things fix it and
+all three are load-bearing: floor the denominator at 0.20 of standing height, skip
+bodies clipped by the frame edge, and set the threshold to 2.5.
+
+Verified on `grocery-store.mp4`: 7 reaches before, 1 after, and the survivor is a
+genuine reach into a shelf. That closes true-positive validation. It rests on one
+reach episode by one shopper, so 2.5 is provisional.
+
+**Never tune this by eye again.** `tests/fixtures/reach_poses.json` holds real
+keypoints from the adjudicated frames and `tests/test_reach_fixture.py` runs the
+detector against them. Every other reach test builds poses by hand with shoulders
+square to the camera, which is precisely the assumption that hid this bug.
 
 The event store is SQLite for now. The schema is deliberately plain so it ports to
 Postgres unchanged when cross-store aggregation lands. A visit is the durable record,
