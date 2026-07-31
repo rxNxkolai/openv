@@ -44,13 +44,16 @@ class PersonTracker:
         tracker_cls = ALGORITHMS[algorithm]
 
         # How long a shopper can be hidden before their identity is retired and a
-        # fresh one is issued on reacquisition. The library default is 30 frames,
-        # which is half a second at 60fps: shorter than an ordinary occlusion in a
-        # crowd, so it fragments one shopper into several and inflates every
-        # distinct-shopper count. Specified in seconds so the behaviour is the
-        # same on a 7fps webcam and a 60fps camera.
+        # fresh one is issued on reacquisition. Too short and one shopper becomes
+        # several, inflating every distinct-shopper count.
+        #
+        # `lost_track_buffer` is NOT a frame count at the source framerate: the
+        # library treats it as 30fps-equivalent frames and rescales it internally,
+        # so the default of 30 is one second of real time on a 7fps webcam and on
+        # a 60fps camera alike. Multiplying by the actual fps here would therefore
+        # double-scale it (2s at 60fps would ask for 4s). Multiply by 30.
         self.lost_seconds = lost_seconds
-        lost_buffer = max(1, round(lost_seconds * (fps if fps > 0 else 30.0)))
+        lost_buffer = max(1, round(lost_seconds * 30.0))
 
         # Trackers do not share an init signature, so only pass what each accepts.
         wanted: dict[str, Any] = {

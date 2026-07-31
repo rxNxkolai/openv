@@ -273,9 +273,20 @@ def _cmd_bench_trackers(args: argparse.Namespace) -> int:
         tracker = PersonTracker(fps=info.fps, algorithm=algorithm, lost_seconds=lost)
         seen: set[int] = set()
         counts: list[int] = []
+        last_frame_of: dict[int, int] = {}
+        reacquired = 0
         started = time.perf_counter()
-        for detections, frame in cached:
+        for index, (detections, frame) in enumerate(cached):
             people = tracker.update(detections, frame)
+            for person in people:
+                # A track that reappears after a gap is one the tracker carried
+                # through an occlusion instead of retiring. Fewer ids is only good
+                # news if this rises with it; fewer ids while this stays flat means
+                # identities are being merged, not preserved.
+                previous = last_frame_of.get(person.track_id)
+                if previous is not None and index - previous > 1:
+                    reacquired += 1
+                last_frame_of[person.track_id] = index
             seen.update(p.track_id for p in people)
             counts.append(len(people))
         elapsed = time.perf_counter() - started
