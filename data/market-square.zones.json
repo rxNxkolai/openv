@@ -1,0 +1,19 @@
+{
+  "zones": [
+    {
+      "name": "fountain",
+      "kind": "feature",
+      "polygon": [[650, 620], [1320, 620], [1320, 1460], [650, 1460]]
+    },
+    {
+      "name": "plaza-center",
+      "kind": "aisle",
+      "polygon": [[90, 1460], [2060, 1460], [2060, 2700], [90, 2700]]
+    },
+    {
+      "name": "south-walkway",
+      "kind": "entrance",
+      "polygon": [[90, 2700], [2060, 2700], [2060, 3820], [90, 3820]]
+    }
+  ]
+}

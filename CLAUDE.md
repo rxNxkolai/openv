@@ -99,12 +99,23 @@ bodies clipped by the frame edge, and set the threshold to 2.5.
 
 Verified on `grocery-store.mp4`: 7 reaches before, 1 after, and the survivor is a
 genuine reach into a shelf. That closes true-positive validation. It rests on one
-reach episode by one shopper, so 2.5 is provisional.
+reach episode by one shopper, so 2.5 is provisional on the sensitivity side.
 
-**Never tune this by eye again.** `tests/fixtures/reach_poses.json` holds real
-keypoints from the adjudicated frames and `tests/test_reach_fixture.py` runs the
-detector against them. Every other reach test builds poses by hand with shoulders
-square to the camera, which is precisely the assumption that hid this bug.
+Specificity is better evidenced. On `people-walking.mp4`, an overhead concourse
+where nobody reaches for anything, 29 shoppers crossed a shelf zone and produced
+0 reaches at 2.5, against 4 at the old 1.6 and 43 with the gate off. Pooling both
+clips, every non-reach measures at most 2.49 and the genuine reach at least 2.59,
+so the default sits in a gap rather than flush against the data.
+
+**Never tune this by eye again.** Two fixtures of real keypoints, and
+`tests/test_reach_fixture.py` runs the detector against both:
+`reach_poses.json` is sensitivity plus specificity on one grocery shopper,
+`walking_poses.json` is specificity across 15 bodies, trimmed to the hardest
+negatives. Every other reach test builds poses by hand with shoulders square to
+the camera, which is precisely the assumption that hid this bug.
+
+Zone JSON is deliberately not gitignored even though `data/` is, because the
+polygons are half of how a fixture was produced.
 
 The event store is SQLite for now. The schema is deliberately plain so it ports to
 Postgres unchanged when cross-store aggregation lands. A visit is the durable record,

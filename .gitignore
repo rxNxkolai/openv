@@ -13,8 +13,15 @@ __pycache__/
 models/
 
 # Data and output (video never enters git)
-data/
+# data/* rather than data/, because git will not descend into an excluded
+# directory and the negation below would never be consulted.
+data/*
 out/
+
+# Zone polygons are small text config, not footage, and they are the other half
+# of how the test fixtures were produced. Without them the fixtures cannot be
+# regenerated or argued with.
+!data/*.zones.json
 
 # Env
 .env

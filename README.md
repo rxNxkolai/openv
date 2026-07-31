@@ -239,14 +239,31 @@ entirely, since a truncated box has the wrong height and half a torso.
 
 Measured on `grocery-store.mp4`, which contains one genuine reach and three
 trolley-push stretches: **7 reaches before, 1 after, and the survivor is the real
-one.** Both halves of that are now pinned by `tests/test_reach_fixture.py`, which
-runs the detector against real MediaPipe keypoints recorded from those frames
-rather than hand-built poses. Reintroducing any one of the three fixes
-misclassifies between 1 and 15 frames.
+one.**
 
-The threshold rests on a single reach episode by a single shopper, so treat 2.5
-as provisional. More footage should retune it, and the fixture is there to make
-that a measurement rather than a guess.
+Specificity was then checked on `people-walking.mp4`, a high overhead concourse
+where nobody reaches for anything, so every reach reported is a false positive by
+construction. Across 29 shoppers who all crossed a shelf zone:
+
+| `--min-arm-extension` | reaches reported |
+|---|---|
+| 0, geometry only | 43 |
+| 1.6, the previous default | 4 |
+| 2.5, the current default | **0** |
+
+Pooling both clips, every non-reach measures at most 2.49 and the genuine reach
+measures at least 2.59, so the default sits inside a real gap rather than flush
+against the data.
+
+`tests/test_reach_fixture.py` pins all of it against real MediaPipe keypoints
+rather than hand-built poses. Reintroducing any one of the three fixes
+misclassifies between 1 and 55 recorded samples.
+
+Sensitivity still rests on a single reach episode by a single shopper, so treat
+2.5 as provisional in that direction. Specificity is on firmer ground: 15
+distinct bodies across two camera geometries. More footage of people actually
+reaching should retune it, and the fixtures are there to make that a measurement
+rather than a guess.
 
 ### Useful flags
 

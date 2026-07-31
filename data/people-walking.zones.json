@@ -1,0 +1,14 @@
+{
+  "zones": [
+    {
+      "name": "concourse-floor",
+      "kind": "floor",
+      "polygon": [[120, 160], [1800, 160], [1800, 1010], [120, 1010]]
+    },
+    {
+      "name": "specificity-shelf",
+      "kind": "shelf",
+      "polygon": [[600, 300], [1250, 300], [1250, 620], [600, 620]]
+    }
+  ]
+}
