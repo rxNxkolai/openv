@@ -20,6 +20,9 @@ dependencies = [
 [project.scripts]
 patron = "patron.cli:main"
 
+[dependency-groups]
+dev = ["pytest>=8"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
