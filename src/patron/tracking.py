@@ -34,6 +34,7 @@ class PersonTracker:
         fps: float,
         algorithm: str = "bytetrack",
         track_activation_threshold: float = 0.5,
+        lost_seconds: float = 2.0,
     ) -> None:
         if algorithm not in ALGORITHMS:
             raise ValueError(
@@ -42,10 +43,20 @@ class PersonTracker:
 
         tracker_cls = ALGORITHMS[algorithm]
 
+        # How long a shopper can be hidden before their identity is retired and a
+        # fresh one is issued on reacquisition. The library default is 30 frames,
+        # which is half a second at 60fps: shorter than an ordinary occlusion in a
+        # crowd, so it fragments one shopper into several and inflates every
+        # distinct-shopper count. Specified in seconds so the behaviour is the
+        # same on a 7fps webcam and a 60fps camera.
+        self.lost_seconds = lost_seconds
+        lost_buffer = max(1, round(lost_seconds * (fps if fps > 0 else 30.0)))
+
         # Trackers do not share an init signature, so only pass what each accepts.
         wanted: dict[str, Any] = {
             "frame_rate": float(fps) if fps > 0 else 30.0,
             "track_activation_threshold": track_activation_threshold,
+            "lost_track_buffer": lost_buffer,
         }
         accepted = set(inspect.signature(tracker_cls.__init__).parameters)
         kwargs = {k: v for k, v in wanted.items() if k in accepted}

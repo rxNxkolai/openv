@@ -261,13 +261,16 @@ def _cmd_bench_trackers(args: argparse.Namespace) -> int:
     mean_people = sum(per_frame) / len(per_frame)
     print(f"\n\ncached {len(cached)} frames, {mean_people:.1f} detections/frame mean\n")
 
-    header = f"{'tracker':<12}{'unique ids':>11}{'mean/frame':>12}{'churn':>8}{'time':>9}"
+    header = f"{'tracker':<16}{'unique ids':>11}{'mean/frame':>12}{'churn':>8}{'time':>9}"
     print(header)
     print("-" * len(header))
 
+    lost_values = [float(v) for v in args.lost_seconds.split(",") if v.strip()]
+
     results = []
     for algorithm in algorithms:
-        tracker = PersonTracker(fps=info.fps, algorithm=algorithm)
+      for lost in lost_values:
+        tracker = PersonTracker(fps=info.fps, algorithm=algorithm, lost_seconds=lost)
         seen: set[int] = set()
         counts: list[int] = []
         started = time.perf_counter()
@@ -282,9 +285,10 @@ def _cmd_bench_trackers(args: argparse.Namespace) -> int:
         # never loses anyone approaches the number of people who genuinely
         # entered and left; one that fragments climbs above it.
         churn = len(seen) / mean_tracked if mean_tracked else float("inf")
-        results.append((algorithm, len(seen), mean_tracked, churn, elapsed))
+        label = f"{algorithm}@{lost:g}s"
+        results.append((label, len(seen), mean_tracked, churn, elapsed))
         print(
-            f"{algorithm:<12}{len(seen):>11}{mean_tracked:>12.1f}"
+            f"{label:<16}{len(seen):>11}{mean_tracked:>12.1f}"
             f"{churn:>8.2f}{elapsed:>8.1f}s"
         )
 
@@ -914,6 +918,11 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--frames", type=int, default=120)
     bench.add_argument(
         "--trackers", default="bytetrack,botsort,ocsort,sort", help="comma separated"
+    )
+    bench.add_argument(
+        "--lost-seconds",
+        default="2.0",
+        help="comma separated occlusion tolerances to sweep, e.g. 0.5,2,5",
     )
     bench.add_argument("--slice", type=int, metavar="PX", help="tiled inference")
     bench.add_argument("--resolution", type=int, default=896)
