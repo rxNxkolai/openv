@@ -28,3 +28,8 @@ Thumbs.db
 
 # Local tooling caches
 .impeccable/
+
+# Shell-redirect artifacts: inline python containing > or < can leave
+# zero-byte files named after fragments of the expression.
+*[<>]*
+maximum_frames_without_update
