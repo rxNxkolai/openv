@@ -52,6 +52,23 @@ lets the detector swap out without touching the product layer.
 Person ground position is `Box.foot_point` (bottom-center), not box center. Zone
 membership is always computed on the floor plane.
 
+`floor.py` turns image pixels into store floor coordinates through a single
+homography, because the floor is a plane and stores already have floor plans.
+That decision to anchor everything on the floor plane is what makes it work with
+no rework, and it is the layer a multi-camera bird's-eye view sits on: several
+cameras sharing one coordinate space. Only foot points project, points above the
+horizon return `None` rather than a plausible lie, and **four correspondences
+report no reprojection error at all** because eight equations for eight unknowns
+fit exactly whatever the points are. The fifth point is the only automatic check
+that the calibration is on the ground plane; `floorview.rectify` is the manual
+one.
+
+Stitching a shopper across cameras is a form of re-identification, so it collides
+with constraint 2. Spatial-temporal handoff on the floor plane (a track leaving
+one frustum where another enters) needs no appearance model and keeps the posture
+intact. Appearance-based re-ID does not. That is a product decision, not an
+implementation detail.
+
 ## Milestones
 
 - **M0** video in, people detected, stable track IDs out  (done)

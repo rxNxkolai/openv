@@ -308,6 +308,54 @@ tiled mode practical on real hardware.
 
 fp16 was verified to match fp32 confidences to within 0.001, so it is on by default on CUDA.
 
+## Floor mapping (groundwork, no CLI yet)
+
+A camera sees the store obliquely, so ten pixels means centimetres in the
+foreground and metres down the aisle. Every spatial question (how far, how fast,
+how much floor a display actually commands, where on the store plan) needs
+pixels turned into floor positions first.
+
+The floor is a plane, so one 3x3 homography does it. Four correspondences
+between points in the image and the same points on the store's floor plan solve
+for it, and stores already have floor plans, so nothing is reconstructed from
+pixels.
+
+```python
+from patron.floor import FloorMap
+
+floor = FloorMap.load("data/store.floor.json")
+positions = floor.project_people(frame_result)   # {track_id: (x, y)} in metres
+```
+
+Three things this refuses to do, all of them deliberate:
+
+- **Only foot points project.** A box centre floats up the body, and asking
+  where a floating point lands on the ground has no answer. This is the same
+  reason zone membership already uses `Box.foot_point`.
+- **Points above the horizon return `None`.** The ground plane has no finite
+  image there. A number would read as a shopper standing through a wall.
+- **Four correspondences report no reprojection error at all.** A homography has
+  eight degrees of freedom and four point pairs supply exactly eight equations,
+  so the fit is exact whatever the points are, including four clicked on a shelf
+  edge. Reporting `0.000` there would be a confident number standing in for no
+  evidence. The fifth point is what buys a residual.
+
+Since four points cannot check themselves, `floorview.rectify` warps the frame
+onto the floor plane so the calibration can be judged by eye: if the floor's own
+tiles and joints come out square and parallel, the points were on the ground
+plane. If they fan out, they were not.
+
+Verified on `people-walking.mp4`: converging tile lines rectify to parallel, and
+34 tracked people project to plan-view paths that run straight, which is what
+walking in a straight line should look like once the perspective is removed. In
+the rectified frame the people themselves smear outward, because a person has
+height and only the floor is being mapped. Their feet land correctly and nothing
+above the ankle does, which is the foot-point rule made visible.
+
+This is the layer a multi-camera bird's-eye view sits on: several cameras
+sharing one floor coordinate space. Calibration is still hand-written JSON,
+there is no click-to-calibrate command yet.
+
 ## Stack
 
 | Layer | Library | License |
