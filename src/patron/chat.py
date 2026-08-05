@@ -126,6 +126,7 @@ class ChatSession:
         model: str = MODEL,
         client: Any | None = None,
         max_rounds: int = MAX_TOOL_ROUNDS,
+        conversation_id: int | None = None,
     ) -> None:
         self.store = store
         self.session_id = session_id
@@ -133,6 +134,10 @@ class ChatSession:
         self.max_rounds = max_rounds
         self._client = client
         self.messages: list[dict[str, Any]] = []
+        # Persistence is opt-in. A one-off question from the CLI does not need a
+        # thread, and creating one for every invocation would fill the list with
+        # single-question stubs nobody returns to.
+        self.conversation_id = conversation_id
 
     def _ensure_client(self):
         if self._client is None:
@@ -147,9 +152,27 @@ class ChatSession:
         except TypeError as exc:
             return {"error": f"bad arguments for {name}: {exc}"}
 
+    def resume(self, conversation_id: int) -> ChatSession:
+        """Reopen a stored thread so a follow-up has its history.
+
+        Only the prose is replayed, not the tool-call blocks. Those referred to
+        specific tool_use ids from a finished exchange, and reviving them would
+        hand the model dangling references to calls it can no longer complete.
+        The citations stay on the stored message for the reader.
+        """
+        self.conversation_id = conversation_id
+        self.messages = [
+            {"role": row["role"], "content": row["text"]}
+            for row in self.store.conversation(conversation_id)
+            if row["text"]
+        ]
+        return self
+
     def ask(self, question: str) -> Answer:
         client = self._ensure_client()
         self.messages.append({"role": "user", "content": question})
+        if self.conversation_id is not None:
+            self.store.add_message(self.conversation_id, "user", question)
 
         answer = Answer(text="")
 
@@ -173,7 +196,7 @@ class ChatSession:
                 answer.text = "".join(
                     b.text for b in blocks if getattr(b, "type", None) == "text"
                 )
-                return answer
+                return self._finish(answer)
 
             results = []
             for block in tool_uses:
@@ -198,6 +221,18 @@ class ChatSession:
             f"I could not settle this within {self.max_rounds} rounds of looking "
             f"things up. The calls I made are attached."
         )
+        return self._finish(answer)
+
+    def _finish(self, answer: Answer) -> Answer:
+        """Store the answer with its evidence, if this thread is being kept."""
+        if self.conversation_id is not None:
+            self.store.add_message(
+                self.conversation_id,
+                "assistant",
+                answer.text,
+                citations=[c.as_dict() for c in answer.citations],
+                truncated=answer.truncated,
+            )
         return answer
 
     def _create(self, client):

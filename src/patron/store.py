@@ -11,6 +11,7 @@ it. See CLAUDE.md constraint 2.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -79,6 +80,37 @@ CREATE TABLE IF NOT EXISTS positions (
 
 CREATE INDEX IF NOT EXISTS idx_positions_session_track
     ON positions(session_id, track_id, t_s);
+
+-- Conversations with the agent, so a thread survives a restart and a question
+-- asked last week can be reopened rather than retyped.
+--
+-- This is staff text, not shopper data: employees asking about their own store.
+-- The privacy posture concerns what the cameras record, and nothing here holds
+-- anything about a shopper that the tables above do not already.
+--
+-- `citations` is the JSON tool-call trail behind an answer. It is stored rather
+-- than recomputed because a tool result is a claim about a moment: re-running
+-- the same call next month answers a different question, and an answer whose
+-- evidence has silently moved underneath it is worse than one with none.
+CREATE TABLE IF NOT EXISTS conversations (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER REFERENCES sessions(id),
+    title       TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id               INTEGER PRIMARY KEY,
+    conversation_id  INTEGER NOT NULL REFERENCES conversations(id),
+    role             TEXT    NOT NULL,
+    text             TEXT    NOT NULL,
+    citations        TEXT,
+    truncated        INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation
+    ON messages(conversation_id, id);
 
 -- Agent output. `status` starts at 'proposed' and there is deliberately no code
 -- path that sets it to 'approved' automatically: a recommendation becomes an
@@ -277,6 +309,75 @@ class EventStore:
         )
         self._conn.commit()
         return len(rows)
+
+    def start_conversation(
+        self, title: str, session_id: int | None = None
+    ) -> int:
+        cursor = self._conn.execute(
+            "INSERT INTO conversations (session_id, title, created_at)"
+            " VALUES (?, ?, ?)",
+            (
+                session_id,
+                title,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid)
+
+    def add_message(
+        self,
+        conversation_id: int,
+        role: str,
+        text: str,
+        citations: list | None = None,
+        truncated: bool = False,
+    ) -> int:
+        cursor = self._conn.execute(
+            "INSERT INTO messages"
+            " (conversation_id, role, text, citations, truncated, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                conversation_id,
+                role,
+                text,
+                json.dumps(citations) if citations else None,
+                1 if truncated else 0,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid)
+
+    def conversation(self, conversation_id: int) -> list[dict]:
+        """One thread's messages, oldest first, with citations decoded."""
+        rows = self._conn.execute(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id",
+            (conversation_id,),
+        ).fetchall()
+        out = []
+        for row in rows:
+            message = dict(row)
+            message["citations"] = (
+                json.loads(message["citations"]) if message["citations"] else []
+            )
+            message["truncated"] = bool(message["truncated"])
+            out.append(message)
+        return out
+
+    def conversations(self, session_id: int | None = None) -> list[dict]:
+        """Threads, newest first, with a message count for the list view."""
+        where, params = (
+            ("WHERE c.session_id = ?", (session_id,)) if session_id is not None else ("", ())
+        )
+        rows = self._conn.execute(
+            "SELECT c.*, COUNT(m.id) AS message_count"  # noqa: S608
+            " FROM conversations c LEFT JOIN messages m"
+            " ON m.conversation_id = c.id"
+            f" {where} GROUP BY c.id ORDER BY c.id DESC",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def recommendations(
         self, session_id: int | None = None, status: str | None = None

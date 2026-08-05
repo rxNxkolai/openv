@@ -766,6 +766,19 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     with EventStore(args.db) as store:
         session_id = None if args.all_sessions else store.latest_session_id()
         chat = ChatSession(store, session_id)
+
+        if args.thread is not None:
+            if not store.conversation(args.thread) and not any(
+                t["id"] == args.thread for t in store.conversations()
+            ):
+                print(f"error: no thread {args.thread}", file=sys.stderr)
+                return 1
+            chat.resume(args.thread)
+            print(f"thread   {args.thread} (resumed)\n")
+        elif args.save is not None:
+            chat.conversation_id = store.start_conversation(args.save, session_id)
+            print(f"thread   {chat.conversation_id} ({args.save})\n")
+
         try:
             answer = chat.ask(args.question)
         except ChatUnavailable as exc:
@@ -794,6 +807,46 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         print("re-run with --show-calls to see what each returned.")
 
     return 1 if answer.truncated else 0
+
+
+def _cmd_threads(args: argparse.Namespace) -> int:
+    """List saved conversations."""
+    from patron.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        threads = store.conversations()
+        if args.thread is not None:
+            messages = store.conversation(args.thread)
+            if not messages:
+                print(f"no messages in thread {args.thread}")
+                return 0
+            for message in messages:
+                who = "you" if message["role"] == "user" else "patron"
+                print(f"\n[{who}]  {message['created_at']}")
+                print(message["text"])
+                if message["citations"]:
+                    calls = ", ".join(c["tool"] for c in message["citations"])
+                    print(f"  (looked up: {calls})")
+                if message["truncated"]:
+                    print("  (this answer was cut off before it settled)")
+            return 0
+
+    if not threads:
+        print("no saved threads. `patron ask ... --save \"a title\"` starts one.")
+        return 0
+
+    print(f"{'id':>4}  {'msgs':>4}  {'started':<20}  title")
+    print("-" * 60)
+    for thread in threads:
+        print(
+            f"{thread['id']:>4}  {thread['message_count']:>4}  "
+            f"{thread['created_at']:<20}  {thread['title']}"
+        )
+    return 0
 
 
 def _calibration_status(floor_map, point_count: int, units: str) -> tuple[str, bool]:
@@ -1279,7 +1332,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print what each lookup returned, not just which ones ran",
     )
+    ask.add_argument(
+        "--save", metavar="TITLE", help="start a saved thread with this title"
+    )
+    ask.add_argument(
+        "--thread", type=int, help="continue a saved thread, keeping its history"
+    )
     ask.set_defaults(func=_cmd_ask)
+
+    threads = sub.add_parser("threads", help="list or read saved conversations")
+    threads.add_argument("--db", default="out/patron.db", help="event store to read")
+    threads.add_argument("--thread", type=int, help="print this thread's messages")
+    threads.set_defaults(func=_cmd_threads)
 
     floorplan = sub.add_parser(
         "floorplan", help="calibrate camera pixels to store floor coordinates"
