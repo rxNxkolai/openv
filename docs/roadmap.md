@@ -21,7 +21,7 @@ decision they would otherwise not have made.
 | M4 | Live camera, browser console | done in software, **unrun on a real camera** |
 | M5 | Spatial layer, floor coordinates | done bar multi-camera |
 | M6 | Agent and chat surface | tools and loop built, unrun |
-| M7 | Connectors and automation | not started |
+| M7 | Connectors and automation | re-measurement, digest and webhook done |
 | M8 | Planogram integration, SKU level | not started |
 | M9 | Multi-store | not started |
 
@@ -229,11 +229,22 @@ Automations route work to humans. They do not change stores.
   change for review.
 - Scheduled re-analysis, digests, weekly summaries.
 
-**The automation that matters most is re-measurement.** When a change is made,
-automatically measure the same funnel over the same zone afterwards and report
-the delta. That is what proves Patron works, it is what justifies renewal, and
-it carries no liability because it asserts nothing about what to do next. Build
-this before anything else in M7.
+**The automation that matters most is re-measurement.** Built: `patron measure`
+compares a zone across two sessions and returns a verdict rather than a delta,
+because two rates always differ by something and reporting that as a result
+makes noise look like evidence. `indistinguishable` is a real answer.
+
+`patron digest` decides what is worth sending, and says nothing when nothing is,
+because a daily "nothing to report" teaches people to mute the channel. Its exit
+code carries the decision so a scheduled job branches without parsing. A zone is
+re-measured if it is worrying now **or was worrying then**, so a problem that got
+fixed still gets its success announced rather than silently dropping out.
+
+Delivery is a plain webhook in the format Slack, Discord, Teams and Google Chat
+all accept, so those are configuration rather than code.
+
+**Still to build for M7:** approval routing, ticket creation, and the scheduling
+itself.
 
 **Exit criteria:** a recommendation is proposed, approved by a named human,
 acted on in the store, and the before-and-after measurement lands in the channel
