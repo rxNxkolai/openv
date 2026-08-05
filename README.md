@@ -216,6 +216,31 @@ SKUs or prices to cover that gap.
 
 If credentials are missing, `analyze` is unaffected: it needs no model at all.
 
+### Asking questions
+
+```bash
+uv run patron ask "which shelf is losing the most shoppers" --db out/patron.db
+```
+
+`advise` hands the model a fixed set of findings. `ask` cannot work that way,
+because the question decides which numbers matter, so the model gets **tools**
+instead of a payload and `tools.py` is its only route to a number.
+
+That distinction is what keeps the answers defensible:
+
+- **Rates cross as verdicts, not ingredients.** A rate arrives as a value that is
+  either a number or `null`, and when it is `null` the reason travels in the same
+  object. The counts stay visible, but already labelled as not rate-able, so a
+  model cannot turn "1 of 12 shoppers" into a confident 8% that `analyze` refused
+  to state.
+- **Comparisons are computed by the tool**, not left to the caller, so two
+  withheld rates cannot be quietly subtracted into a confident difference.
+- **Every call is kept.** The answer prints what it looked up, and `--show-calls`
+  prints what each returned. A number whose provenance is hidden is a number
+  people stop checking.
+- **No tool can approve anything.** Approval is a human decision, and a test
+  asserts no approving tool ever gets added.
+
 ### The false-reach problem
 
 A shelf zone is a flat polygon in image space, so **it cannot tell a hand at the

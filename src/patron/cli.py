@@ -752,6 +752,50 @@ def _inert_flag_warnings(args, shelf_zone_count: int | None = None) -> list[str]
     return out
 
 
+def _cmd_ask(args: argparse.Namespace) -> int:
+    """Ask a question about the store, answered through the tool layer."""
+    import json
+
+    from patron.chat import ChatSession, ChatUnavailable
+    from patron.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        session_id = None if args.all_sessions else store.latest_session_id()
+        chat = ChatSession(store, session_id)
+        try:
+            answer = chat.ask(args.question)
+        except ChatUnavailable as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            # analyze needs no model at all, and is the floor of the product.
+            print("\n`patron analyze` needs no credentials and still works.", file=sys.stderr)
+            return 1
+
+    print(answer.text)
+
+    if answer.citations and args.show_calls:
+        print("\n--- what was looked up ---")
+        for citation in answer.citations:
+            params = ", ".join(f"{k}={v!r}" for k, v in citation.params.items())
+            print(f"\n{citation.tool}({params})")
+            print(json.dumps(citation.result, indent=2, default=str))
+    elif answer.citations:
+        calls = ", ".join(
+            f"{c.tool}({', '.join(f'{k}={v!r}' for k, v in c.params.items())})"
+            for c in answer.citations
+        )
+        # Every number above came from these. Naming them by default, because an
+        # answer whose provenance is hidden behind a flag is an answer people
+        # stop checking.
+        print(f"\nlooked up: {calls}")
+        print("re-run with --show-calls to see what each returned.")
+
+    return 1 if answer.truncated else 0
+
+
 def _calibration_status(floor_map, point_count: int, units: str) -> tuple[str, bool]:
     """HUD line for the calibrator, and whether it should read as a warning.
 
@@ -1223,6 +1267,19 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the MJPG request, only if the camera misbehaves with it",
     )
     record.set_defaults(func=_cmd_record)
+
+    ask = sub.add_parser("ask", help="ask a question about the store")
+    ask.add_argument("question", help="what you want to know, in plain language")
+    ask.add_argument("--db", default="out/patron.db", help="event store to answer from")
+    ask.add_argument(
+        "--all-sessions", action="store_true", help="answer across every session"
+    )
+    ask.add_argument(
+        "--show-calls",
+        action="store_true",
+        help="print what each lookup returned, not just which ones ran",
+    )
+    ask.set_defaults(func=_cmd_ask)
 
     floorplan = sub.add_parser(
         "floorplan", help="calibrate camera pixels to store floor coordinates"

@@ -20,7 +20,7 @@ decision they would otherwise not have made.
 | M3 | Analysis and agent | done, agent path unrun |
 | M4 | Live camera, browser console | done in software, **unrun on a real camera** |
 | M5 | Spatial layer, floor coordinates | done bar multi-camera |
-| M6 | Agent and chat surface | tool layer built |
+| M6 | Agent and chat surface | tools and loop built, unrun |
 | M7 | Connectors and automation | not started |
 | M8 | Planogram integration, SKU level | not started |
 | M9 | Multi-store | not started |
@@ -175,8 +175,18 @@ not sufficient; the contract has to carry the refusal.
 than returning two rates, so two withheld numbers cannot be silently subtracted
 into a confident difference.
 
-**Still to build for M6:** the conversation loop itself, message persistence,
-citation plumbing back to the tool calls, and the page.
+`chat.py` runs the conversation over those tools and keeps every call as a
+citation, which is what the evidence panel reads. The cycle is bounded: a model
+that keeps asking for tools and never answers is cut off and says so, rather
+than returning a partial answer as if it were whole. `patron ask` is the CLI
+front end.
+
+The loop is tested against a scripted fake client, so the machinery is verified
+with no credentials. **The real path has still never run**, which remains one of
+the three open gates.
+
+**Still to build for M6:** message persistence across restarts, the page itself,
+and the proposal-from-answer flow.
 
 ### Other constraints
 
