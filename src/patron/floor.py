@@ -187,13 +187,35 @@ class FloorMap:
 
     @classmethod
     def load(cls, path: str | Path) -> FloorMap:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls(
-            correspondences=tuple(
+        # Named failures, for the same reason as ZoneSet.load: a calibration is
+        # hand-editable, so a bad one is a typo rather than a broken install.
+        path = Path(path)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValueError(f"could not read {path}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{path} is not valid JSON: {exc.msg} at line {exc.lineno}"
+            ) from exc
+
+        if not isinstance(raw, dict) or "correspondences" not in raw:
+            raise ValueError(f"{path} has no 'correspondences' key")
+
+        try:
+            pairs = tuple(
                 (tuple(c["image"]), tuple(c["floor"])) for c in raw["correspondences"]
-            ),
-            units=raw.get("units", "m"),
-        )
+            )
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                f"{path}: every correspondence needs an 'image' and a 'floor' point "
+                f"({exc})"
+            ) from exc
+
+        try:
+            return cls(correspondences=pairs, units=raw.get("units", "m"))
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from exc
 
     def __repr__(self) -> str:
         error = self.reprojection_error

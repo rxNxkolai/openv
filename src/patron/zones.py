@@ -95,18 +95,43 @@ class ZoneSet:
 
     @classmethod
     def load(cls, path: str | Path) -> ZoneSet:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        # Every failure below names the file. A raw JSONDecodeError reaching a
+        # user reads as a broken install when what actually happened is that
+        # they edited a zones file by hand and dropped a comma.
+        path = Path(path)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"could not read {path}: {exc}") from exc
+
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{path} is not valid JSON: {exc.msg} at line {exc.lineno}"
+            ) from exc
+
+        if not isinstance(raw, dict) or "zones" not in raw:
+            raise ValueError(f"{path} has no 'zones' key")
+
         # A zone with no declared kind is a floor zone. Defaulting the other way
         # turns every unlabelled polygon into a wrist-tested one, which silently
         # reports no visits at all and no reaches either unless --pose is on.
-        zones = tuple(
-            Zone(
-                name=z["name"],
-                polygon=tuple((float(x), float(y)) for x, y in z["polygon"]),
-                kind=z.get("kind", FLOOR_KIND),
+        try:
+            zones = tuple(
+                Zone(
+                    name=z["name"],
+                    polygon=tuple((float(x), float(y)) for x, y in z["polygon"]),
+                    kind=z.get("kind", FLOOR_KIND),
+                )
+                for z in raw["zones"]
             )
-            for z in raw["zones"]
-        )
+        except KeyError as exc:
+            raise ValueError(f"{path}: a zone is missing {exc}") from exc
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and "at least 3 points" in str(exc):
+                raise ValueError(f"{path}: {exc}") from exc
+            raise ValueError(f"{path}: a zone polygon is malformed: {exc}") from exc
         names = [z.name for z in zones]
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:
