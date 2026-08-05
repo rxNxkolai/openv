@@ -20,7 +20,7 @@ decision they would otherwise not have made.
 | M3 | Analysis and agent | done, agent path unrun |
 | M4 | Live camera, browser console | done in software, **unrun on a real camera** |
 | M5 | Spatial layer, floor coordinates | done bar multi-camera |
-| M6 | Agent and chat surface | not started |
+| M6 | Agent and chat surface | tool layer built |
 | M7 | Connectors and automation | not started |
 | M8 | Planogram integration, SKU level | not started |
 | M9 | Multi-store | not started |
@@ -143,7 +143,8 @@ with the advice. This already holds for `patron advise` and it must hold for
 chat.
 
 So chat is **not** text-to-SQL and **not** a model with database access. It is a
-tool-calling agent over the deterministic analysis layer:
+tool-calling agent over the deterministic analysis layer. `tools.py` implements
+this, with `TOOL_SPECS` ready for a tool-calling API:
 
 | Tool | Returns |
 |---|---|
@@ -164,10 +165,18 @@ rate, because 12 shoppers is below the confidence threshold. The guard exists in
 `analysis.py` and the tool layer would have handed the model exactly what it
 needs to bypass it.
 
-So tools return the guarded object: a rate of `null` with a stated reason, never
-the raw ingredients that permit the model to reconstruct a number the system
-declined to assert. The system prompt forbidding it is not sufficient. The tool
-contract has to make it impossible.
+So every rate crosses the boundary as a `Rate`: a value that is either a number
+or `null`, and when it is `null` the reason travels in the same object. The
+counts stay visible, because hiding them would be its own dishonesty, but they
+arrive already labelled as not rate-able. A system prompt forbidding division is
+not sufficient; the contract has to carry the refusal.
+
+`compare_zones` is the same idea one level up. It computes the comparison rather
+than returning two rates, so two withheld numbers cannot be silently subtracted
+into a confident difference.
+
+**Still to build for M6:** the conversation loop itself, message persistence,
+citation plumbing back to the tool calls, and the page.
 
 ### Other constraints
 
