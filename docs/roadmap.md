@@ -19,7 +19,7 @@ decision they would otherwise not have made.
 | M2 | Pose and reach detection | done, validated both directions |
 | M3 | Analysis and agent | done, agent path unrun |
 | M4 | Live camera, browser console | done in software, **unrun on a real camera** |
-| M5 | Spatial layer, floor coordinates | started |
+| M5 | Spatial layer, floor coordinates | done bar multi-camera |
 | M6 | Agent and chat surface | not started |
 | M7 | Connectors and automation | not started |
 | M8 | Planogram integration, SKU level | not started |
@@ -97,19 +97,19 @@ the whole path demoable with no camera present.
 camera pixels, so distance means something and several cameras can describe one
 space.
 
-Started. `floor.py` maps pixels to floor coordinates through a single homography,
-because the floor is a plane and stores already have floor plans. `floorview.py`
-renders the plan view and rectifies a frame so a calibration can be checked by
-eye.
+**Done:**
+
+- `floor.py` maps pixels to floor coordinates through one homography, because
+  the floor is a plane and stores already have floor plans.
+- `patron floorplan` calibrates by clicking, reads `UNVERIFIABLE` at four points
+  rather than a reassuring zero, and warps the floor flat as the manual check.
+- Positions persist to the event store, sampled at 1Hz per shopper, so paths and
+  speed survive the session and can be asked about later.
+- `patron live --floor` puts the plan view in the browser and records to the
+  same store the offline path uses.
 
 **Remaining:**
 
-- **`patron floorplan`, click-to-calibrate.** Same interaction as `patron zones`.
-  Must nag for a fifth correspondence: four points fit exactly by construction,
-  so a four-point calibration cannot be checked at all.
-- **Floor positions in the event store.** Today events record zone membership,
-  not position. Paths, speed, and floor-area productivity all need the position.
-- **Bird's-eye panel in the live console.**
 - **Multi-camera fusion.** Each camera gets its own homography into one shared
   floor space.
 
