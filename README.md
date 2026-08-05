@@ -216,6 +216,35 @@ SKUs or prices to cover that gap.
 
 If credentials are missing, `analyze` is unaffected: it needs no model at all.
 
+### Did the change work?
+
+```bash
+uv run patron measure endcap --before 3 --after 7 --db out/patron.db
+```
+
+The question a retailer asks after acting on a recommendation, and the one that
+makes this renewable rather than a one-off study. It needs no model.
+
+It is also the easiest place in the product to produce confident nonsense. Two
+rates always differ by something, and reporting that difference as a result
+makes noise look like evidence in a document someone plans against. So the
+answer is a verdict rather than a delta:
+
+| verdict | meaning |
+|---|---|
+| `improved` / `worsened` | larger than chance would produce at this sample size |
+| `indistinguishable` | a real answer, and usually the correct one early on |
+| `not_enough_data` | no rate exists on one side, so there is nothing to compare |
+
+Measured: 30 shoppers before and after, 5 reaches then 7. That is a 40% relative
+improvement if you are careless. Patron calls it `indistinguishable` at p = 0.52
+and prints "This is not a result. Do not plan against it."
+
+The test is a pooled two-proportion z-test at p < 0.05. When the normal
+approximation behind it stops applying, which happens with plenty of traffic but
+almost no reaches, it returns `not_enough_data` rather than a number that looks
+like the others and is not comparable to them.
+
 ### Asking questions
 
 ```bash

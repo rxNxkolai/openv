@@ -42,6 +42,7 @@ from patron.analysis import (
     ZoneFunnel,
     analyze,
 )
+from patron.analysis import measure_change as _measure_change
 from patron.store import EventStore
 
 
@@ -220,6 +221,46 @@ def compare_zones(
     }
 
 
+def measure_change(
+    store: EventStore,
+    zone: str,
+    before_session: int,
+    after_session: int,
+    session_id: int | None = None,  # noqa: ARG001 - this tool names its own sessions
+) -> dict[str, Any]:
+    """Did a change to this zone actually work?
+
+    The verdict, not the raw delta, is the answer. A tool that always produced a
+    confident percentage difference would make noise look like evidence, and a
+    retailer would plan against it. `indistinguishable` is a real answer here and
+    usually the correct one early on.
+    """
+    change = _measure_change(store, zone, before_session, after_session)
+    if change is None:
+        return {
+            "measurable": False,
+            "zone": zone,
+            "reason": "no reach data for that zone in one or both sessions",
+        }
+
+    out: dict[str, Any] = {
+        "measurable": True,
+        "zone": zone,
+        "verdict": change.verdict,
+        "reason": change.reason,
+        "conclusive": change.conclusive,
+        "before": _funnel_dict(change.before),
+        "after": _funnel_dict(change.after),
+    }
+    # The delta only travels when a rate exists on both sides, so it cannot be
+    # quoted next to two withheld rates as if it meant something.
+    if change.delta is not None and change.before.has_confidence and change.after.has_confidence:
+        out["reach_rate_delta"] = change.delta
+    if change.p_value is not None:
+        out["p_value"] = change.p_value
+    return out
+
+
 def get_recommendations(
     store: EventStore, session_id: int | None = None, status: str | None = None
 ) -> dict[str, Any]:
@@ -292,6 +333,25 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
         },
     },
     {
+        "name": "measure_change",
+        "description": (
+            "Did a change to a zone work? Compares one shelf zone across two "
+            "sessions and returns a verdict: improved, worsened, "
+            "indistinguishable, or not_enough_data. 'Indistinguishable' means "
+            "the difference is within what chance would produce at this sample "
+            "size, and is a real answer, not a failure."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "zone": {"type": "string"},
+                "before_session": {"type": "integer"},
+                "after_session": {"type": "integer"},
+            },
+            "required": ["zone", "before_session", "after_session"],
+        },
+    },
+    {
         "name": "get_recommendations",
         "description": (
             "Stored recommendations and their status. Read only: approval is a "
@@ -310,6 +370,7 @@ TOOLS = {
     "get_findings": get_findings,
     "get_funnel": get_funnel,
     "compare_zones": compare_zones,
+    "measure_change": measure_change,
     "get_recommendations": get_recommendations,
 }
 

@@ -809,6 +809,55 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     return 1 if answer.truncated else 0
 
 
+def _cmd_measure(args: argparse.Namespace) -> int:
+    """Did a change to a zone work? Needs no model."""
+    from patron.analysis import measure_change
+    from patron.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        change = measure_change(store, args.zone, args.before, args.after)
+
+    if change is None:
+        print(
+            f"no reach data for {args.zone} in session {args.before} or "
+            f"{args.after}, so there is nothing to compare"
+        )
+        return 1
+
+    mark = {
+        "improved": "++",
+        "worsened": "--",
+        "indistinguishable": "  ",
+        "not_enough_data": " ?",
+    }[change.verdict]
+
+    print(f"{mark} {args.zone}: {change.verdict.replace('_', ' ')}")
+    print(f"     {change.reason}\n")
+
+    header = f"{'':<10}{'passed':>9}{'reached':>9}{'reach rate':>13}"
+    print(header)
+    print("-" * len(header))
+    for label, funnel in (("before", change.before), ("after", change.after)):
+        rate = (
+            f"{funnel.reach_rate * 100:.1f}%"
+            if funnel.has_confidence
+            else "not enough"
+        )
+        print(f"{label:<10}{funnel.passed:>9}{funnel.reached:>9}{rate:>13}")
+
+    if change.delta is not None and change.before.has_confidence and change.after.has_confidence:
+        print(f"\nchange     {change.delta * 100:+.1f} percentage points")
+    if not change.conclusive:
+        # Said plainly, because a difference that is not a result reads as one
+        # to anybody skimming a table of numbers.
+        print("\nThis is not a result. Do not plan against it.")
+    return 0
+
+
 def _cmd_threads(args: argparse.Namespace) -> int:
     """List saved conversations."""
     from patron.store import EventStore
@@ -1339,6 +1388,15 @@ def main(argv: list[str] | None = None) -> int:
         "--thread", type=int, help="continue a saved thread, keeping its history"
     )
     ask.set_defaults(func=_cmd_ask)
+
+    measure = sub.add_parser(
+        "measure", help="did a change to a zone work? compares two sessions"
+    )
+    measure.add_argument("zone", help="the shelf zone that was changed")
+    measure.add_argument("--before", type=int, required=True, help="session id before")
+    measure.add_argument("--after", type=int, required=True, help="session id after")
+    measure.add_argument("--db", default="out/patron.db", help="event store to read")
+    measure.set_defaults(func=_cmd_measure)
 
     threads = sub.add_parser("threads", help="list or read saved conversations")
     threads.add_argument("--db", default="out/patron.db", help="event store to read")

@@ -15,6 +15,7 @@ would.
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass
 
@@ -84,6 +85,151 @@ class StoreAnalysis:
     @property
     def actionable(self) -> tuple[Finding, ...]:
         return tuple(f for f in self.findings if f.severity in ("high", "medium"))
+
+
+# Two-sided significance for a change. Not a tuning knob: 0.05 is the convention
+# a retailer's own analysts will assume, and moving it to make a result look
+# better is the exact failure this whole comparison exists to prevent.
+SIGNIFICANCE = 0.05
+
+# The normal approximation behind the test needs a few expected outcomes in every
+# cell. Below this it quietly stops being valid, so the verdict says so instead.
+MIN_EXPECTED_PER_CELL = 5
+
+
+@dataclass(frozen=True)
+class Change:
+    """One zone measured twice, and whether the difference means anything.
+
+    A retailer changes an endcap and wants to know if it worked. The honest
+    answer is usually "we cannot tell yet", and a tool that always produces a
+    confident percentage difference would be worse than useless: it would make
+    noise look like evidence, repeatedly, in a document someone plans against.
+    """
+
+    zone: str
+    before: ZoneFunnel
+    after: ZoneFunnel
+    verdict: str  # improved | worsened | indistinguishable | not_enough_data
+    reason: str
+    delta: float | None = None
+    p_value: float | None = None
+
+    @property
+    def conclusive(self) -> bool:
+        return self.verdict in ("improved", "worsened")
+
+
+def _normal_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _two_proportion_p(x1: int, n1: int, x2: int, n2: int) -> float | None:
+    """Two-sided p for the difference between two proportions.
+
+    Pooled two-proportion z-test. Returns None when the normal approximation
+    does not apply, rather than a number that looks like the others but is not
+    comparable to them.
+    """
+    if n1 <= 0 or n2 <= 0:
+        return None
+
+    pooled = (x1 + x2) / (n1 + n2)
+    if pooled <= 0.0 or pooled >= 1.0:
+        # Every shopper reached, or none did, in both periods together. There is
+        # no variance to test against.
+        return None
+
+    expected = [pooled * n1, (1 - pooled) * n1, pooled * n2, (1 - pooled) * n2]
+    if min(expected) < MIN_EXPECTED_PER_CELL:
+        return None
+
+    standard_error = math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2))
+    if standard_error == 0.0:
+        return None
+
+    z = (x2 / n2 - x1 / n1) / standard_error
+    return 2.0 * (1.0 - _normal_cdf(abs(z)))
+
+
+def measure_change(
+    store: EventStore, zone: str, before_session: int, after_session: int
+) -> Change | None:
+    """Compare one shelf zone across two sessions.
+
+    Returns None if the zone has no reach data in either session, because
+    "changed from nothing to nothing" is not a measurement.
+    """
+    before = _funnel_for(store, zone, before_session)
+    after = _funnel_for(store, zone, after_session)
+    if before is None or after is None:
+        return None
+
+    if not (before.has_confidence and after.has_confidence):
+        thin = [
+            label
+            for label, funnel in (("before", before), ("after", after))
+            if not funnel.has_confidence
+        ]
+        return Change(
+            zone=zone,
+            before=before,
+            after=after,
+            verdict="not_enough_data",
+            reason=(
+                f"{' and '.join(thin)} saw fewer than {MIN_SHOPPERS_FOR_CONFIDENCE} "
+                f"shoppers, so there is no rate to compare"
+            ),
+        )
+
+    p_value = _two_proportion_p(
+        before.reached, before.passed, after.reached, after.passed
+    )
+    delta = after.reach_rate - before.reach_rate
+
+    if p_value is None:
+        return Change(
+            zone=zone,
+            before=before,
+            after=after,
+            verdict="not_enough_data",
+            reason=(
+                "too few reaches for the comparison to be valid, whatever the "
+                "shopper counts. More traffic will not fix this; more reaches would"
+            ),
+            delta=delta,
+        )
+
+    if p_value >= SIGNIFICANCE:
+        return Change(
+            zone=zone,
+            before=before,
+            after=after,
+            verdict="indistinguishable",
+            reason=(
+                f"the difference is within what this many shoppers would produce "
+                f"by chance (p = {p_value:.2f})"
+            ),
+            delta=delta,
+            p_value=p_value,
+        )
+
+    return Change(
+        zone=zone,
+        before=before,
+        after=after,
+        verdict="improved" if delta > 0 else "worsened",
+        reason=f"larger than chance would produce at this sample size (p = {p_value:.3f})",
+        delta=delta,
+        p_value=p_value,
+    )
+
+
+def _funnel_for(store: EventStore, zone: str, session_id: int) -> ZoneFunnel | None:
+    for finding in analyze(store, session_id).findings:
+        if finding.funnel.shelf_zone == zone:
+            return finding.funnel
+    return None
 
 
 def _pct(value: float | None) -> str:
