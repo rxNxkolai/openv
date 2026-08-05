@@ -809,6 +809,37 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     return 1 if answer.truncated else 0
 
 
+def _cmd_sessions(args: argparse.Namespace) -> int:
+    """List what has been recorded, so session ids stop being magic numbers."""
+    from patron.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        rows = store.sessions()
+
+    if not rows:
+        print("no sessions recorded yet")
+        return 0
+
+    # ISO-8601 with an offset is 25 characters, so a narrower column silently
+    # pushes every other one out of alignment.
+    header = (
+        f"{'id':>4}  {'started':<25}  {'visits':>7}{'reaches':>8}"
+        f"{'positions':>10}  source"
+    )
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{row['id']:>4}  {row['started_at']:<25}  {row['visits']:>7}"
+            f"{row['reaches']:>8}{row['positions']:>10}  {row['source']}"
+        )
+    return 0
+
+
 def _cmd_measure(args: argparse.Namespace) -> int:
     """Did a change to a zone work? Needs no model."""
     from patron.analysis import measure_change
@@ -819,12 +850,32 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         return 1
 
     with EventStore(args.db) as store:
-        change = measure_change(store, args.zone, args.before, args.after)
+        before, after = args.before, args.after
+
+        # Nobody remembers session ids. Defaulting to the two most recent runs
+        # that actually contain this zone is what makes the command usable, and
+        # it names what it picked so the choice is never silent.
+        if before is None or after is None:
+            candidates = store.sessions_with_reaches(args.zone)
+            if len(candidates) < 2:
+                print(
+                    f"{args.zone} has reach data in "
+                    f"{len(candidates)} session{'' if len(candidates) == 1 else 's'}. "
+                    f"Two are needed to measure a change.",
+                    file=sys.stderr,
+                )
+                print("`patron sessions` lists what has been recorded.", file=sys.stderr)
+                return 1
+            after = after if after is not None else candidates[0]
+            before = before if before is not None else candidates[1]
+            print(f"comparing session {before} (before) with {after} (after)\n")
+
+        change = measure_change(store, args.zone, before, after)
 
     if change is None:
         print(
-            f"no reach data for {args.zone} in session {args.before} or "
-            f"{args.after}, so there is nothing to compare"
+            f"no reach data for {args.zone} in session {before} or "
+            f"{after}, so there is nothing to compare"
         )
         return 1
 
@@ -1393,10 +1444,22 @@ def main(argv: list[str] | None = None) -> int:
         "measure", help="did a change to a zone work? compares two sessions"
     )
     measure.add_argument("zone", help="the shelf zone that was changed")
-    measure.add_argument("--before", type=int, required=True, help="session id before")
-    measure.add_argument("--after", type=int, required=True, help="session id after")
+    measure.add_argument(
+        "--before",
+        type=int,
+        help="session id before the change (default: second most recent with this zone)",
+    )
+    measure.add_argument(
+        "--after",
+        type=int,
+        help="session id after the change (default: most recent with this zone)",
+    )
     measure.add_argument("--db", default="out/patron.db", help="event store to read")
     measure.set_defaults(func=_cmd_measure)
+
+    sessions = sub.add_parser("sessions", help="list recorded sessions")
+    sessions.add_argument("--db", default="out/patron.db", help="event store to read")
+    sessions.set_defaults(func=_cmd_sessions)
 
     threads = sub.add_parser("threads", help="list or read saved conversations")
     threads.add_argument("--db", default="out/patron.db", help="event store to read")

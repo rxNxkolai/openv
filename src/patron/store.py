@@ -310,6 +310,32 @@ class EventStore:
         self._conn.commit()
         return len(rows)
 
+    def sessions(self) -> list[dict]:
+        """Every recorded session, newest first, with what each one holds."""
+        rows = self._conn.execute(
+            """
+            SELECT s.*,
+                   (SELECT COUNT(*) FROM visits    v WHERE v.session_id = s.id) AS visits,
+                   (SELECT COUNT(*) FROM reaches   r WHERE r.session_id = s.id) AS reaches,
+                   (SELECT COUNT(*) FROM positions p WHERE p.session_id = s.id) AS positions
+            FROM sessions s
+            ORDER BY s.id DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def sessions_with_reaches(self, zone: str) -> list[int]:
+        """Session ids holding reach data for a zone, newest first.
+
+        What makes `measure` usable without anyone memorising session numbers.
+        """
+        rows = self._conn.execute(
+            "SELECT DISTINCT session_id FROM reaches WHERE zone = ?"
+            " ORDER BY session_id DESC",
+            (zone,),
+        ).fetchall()
+        return [int(r["session_id"]) for r in rows]
+
     def start_conversation(
         self, title: str, session_id: int | None = None
     ) -> int:

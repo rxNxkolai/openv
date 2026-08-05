@@ -155,6 +155,31 @@ def test_the_tool_withholds_the_delta_when_a_rate_was_withheld(tmp_path):
     assert out["before"]["reach_rate"]["withheld"]
 
 
+def test_sessions_holding_a_zone_come_back_newest_first(tmp_path):
+    """What lets `measure` default to the right pair without magic numbers."""
+    with EventStore(tmp_path / "e.db") as store:
+        first = session_with(store, 50, 5)
+        # A session that saw traffic but never a reach at this shelf.
+        middle = store.start_session("quiet.mp4", fps=30.0, width=1920, height=1080)
+        store.add_visits(middle, [span(i, "aisle", 0.0, 5.0) for i in range(1, 51)])
+        last = session_with(store, 50, 20)
+
+        holding = store.sessions_with_reaches("shelf")
+
+    assert holding == [last, first]
+    assert middle not in holding
+
+
+def test_sessions_lists_what_each_run_holds(tmp_path):
+    with EventStore(tmp_path / "e.db") as store:
+        session_with(store, 50, 5)
+        rows = store.sessions()
+
+    assert rows[0]["visits"] == 50
+    assert rows[0]["reaches"] == 5
+    assert rows[0]["positions"] == 0
+
+
 def test_the_tool_reports_an_unmeasurable_zone_plainly(tmp_path):
     with EventStore(tmp_path / "e.db") as store:
         before = session_with(store, 200, 40)

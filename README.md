@@ -219,8 +219,12 @@ If credentials are missing, `analyze` is unaffected: it needs no model at all.
 ### Did the change work?
 
 ```bash
-uv run patron measure endcap --before 3 --after 7 --db out/patron.db
+uv run patron measure endcap --db out/patron.db
 ```
+
+With no session ids it compares the two most recent runs that actually contain
+that zone, and prints which pair it picked. `--before` and `--after` override it,
+and `patron sessions` lists what has been recorded.
 
 The question a retailer asks after acting on a recommendation, and the one that
 makes this renewable rather than a one-off study. It needs no model.
