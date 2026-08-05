@@ -58,6 +58,9 @@ def _cmd_track(args: argparse.Namespace) -> int:
 
         pipeline = Pipeline(detector, tracker=args.tracker, pose=pose_estimator)
 
+        for warning in _inert_flag_warnings(args):
+            print(f"note     {warning}")
+
         zones = None
         visit_tracker = None
         reach_tracker = None
@@ -93,6 +96,10 @@ def _cmd_track(args: argparse.Namespace) -> int:
             )
             if len(zones.shelf) and not args.pose:
                 print("         note: shelf zones present but --pose is off, no reaches")
+            # The complementary case needs the zones loaded before it can be told.
+            for warning in _inert_flag_warnings(args, shelf_zone_count=len(zones.shelf)):
+                if "kind 'shelf'" in warning:
+                    print(f"note     {warning}")
 
             # Debounce windows are specified in seconds and converted, so the
             # behaviour is the same on a 10fps camera and a 60fps one.
@@ -687,6 +694,60 @@ def _cmd_report(args: argparse.Namespace) -> int:
     print(f"{args.db}  ({scope})\n")
     _print_summary(args.db, session_id)
     return 0
+
+
+# Flag defaults, kept here so an inert setting can be told from a deliberate one.
+# argparse cannot report whether a value was typed or defaulted.
+_TRACK_DEFAULTS = {
+    "min_arm_extension": 2.5,
+    "position_interval": 1.0,
+    "enter_seconds": 0.2,
+    "exit_seconds": 0.5,
+    "lost_seconds": 1.5,
+    "db": "out/patron.db",
+}
+
+
+def _inert_flag_warnings(args, shelf_zone_count: int | None = None) -> list[str]:
+    """Flags that were set but cannot do anything in this configuration.
+
+    Twice now this codebase has shipped a setting that looked like it worked and
+    silently did nothing: shelf zones were uncreatable from either drawing tool,
+    and `--floor` alone never opened the event store. Both were invisible at
+    runtime. A flag that cannot take effect should say so rather than let someone
+    conclude the feature is broken, or worse, trust an empty result.
+    """
+    def changed(name: str) -> bool:
+        return getattr(args, name, None) != _TRACK_DEFAULTS[name]
+
+    out: list[str] = []
+
+    if args.pose and not args.zones:
+        out.append(
+            "--pose without --zones: pose runs and costs ~14ms per person per "
+            "frame, and nothing consumes it. Reaches need a shelf zone."
+        )
+    if changed("min_arm_extension") and not args.pose:
+        out.append("--min-arm-extension without --pose: no reaches are detected at all.")
+    if changed("position_interval") and not args.floor:
+        out.append("--position-interval without --floor: no positions are recorded.")
+    for name in ("enter_seconds", "exit_seconds", "lost_seconds"):
+        if changed(name) and not args.zones:
+            out.append(f"--{name.replace('_', '-')} without --zones: no visits are tracked.")
+    if changed("db") and not (args.zones or args.floor):
+        out.append(
+            "--db without --zones or --floor: nothing is written, so the database "
+            "is created empty."
+        )
+    if args.no_trace and not (args.out or args.show):
+        out.append("--no-trace without --out or --show: nothing is being rendered.")
+    if shelf_zone_count == 0 and args.pose:
+        out.append(
+            "--pose but no zone of kind 'shelf': reaches are tested against "
+            "wrists in shelf zones, and there are none."
+        )
+
+    return out
 
 
 def _calibration_status(floor_map, point_count: int, units: str) -> tuple[str, bool]:
