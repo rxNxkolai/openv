@@ -105,8 +105,48 @@ def test_singular_shopper_reads_correctly(tmp_path):
 # Comparison, where two withheld rates could become a confident difference
 # --------------------------------------------------------------------------
 
-def test_comparison_refuses_when_either_side_is_too_thin(tmp_path):
+def two_aisles(tmp_path):
+    """Two shelves on separate aisles, one busy and one barely seen.
+
+    Shelves are paired to aisles from where their reachers were standing, so the
+    reachers of each shelf have to have visited the matching aisle for the two
+    to end up with different pass-by counts.
+    """
     store = EventStore(tmp_path / "c.db")
+    session = store.start_session("t.mp4", fps=30.0, width=1920, height=1080)
+
+    busy = range(1, 41)          # 40 shoppers down aisle-a
+    quiet = range(101, 106)      # 5 down aisle-b
+    store.add_visits(session, [span(i, "aisle-a", 0.0, 5.0) for i in busy])
+    store.add_visits(session, [span(i, "aisle-b", 0.0, 5.0) for i in quiet])
+    store.add_reaches(session, [span(i, "shelf-a", 1.0, 1.5) for i in range(1, 11)])
+    store.add_reaches(session, [span(i, "shelf-b", 1.0, 1.5) for i in range(101, 104)])
+    return store, session
+
+
+def test_comparison_refuses_when_either_side_is_too_thin(tmp_path):
+    """Two withheld rates must not become a confident difference.
+
+    This is the reason the comparison is computed inside the tool rather than
+    left to the caller: subtracting nulls is not something a model should be
+    given the opportunity to improvise.
+    """
+    store, session = two_aisles(tmp_path)
+    with store:
+        out = call(
+            "compare_zones", store, session_id=session, zone_a="shelf-a", zone_b="shelf-b"
+        )
+
+    assert out["comparable"] is False
+    assert "shelf-b" in out["reason"]
+    assert str(MIN_SHOPPERS_FOR_CONFIDENCE) in out["reason"]
+    # The counts are still shown, so the refusal is legible rather than blank.
+    assert out["observed"]["shelf-b"]["passed"] == 5
+    assert "difference" not in out
+
+
+def test_comparison_works_when_both_sides_are_solid(tmp_path):
+    store = EventStore(tmp_path / "d.db")
     with store:
         session = store.start_session("t.mp4", fps=30.0, width=1920, height=1080)
         store.add_visits(session, [span(i, "aisle", 0.0, 5.0) for i in range(1, 41)])
@@ -117,10 +157,9 @@ def test_comparison_refuses_when_either_side_is_too_thin(tmp_path):
             "compare_zones", store, session_id=session, zone_a="shelf-a", zone_b="shelf-b"
         )
 
-    # Both zones share one aisle here, so both are above threshold and this
-    # should compare. The guard is exercised by the unknown-zone case below.
     assert out["comparable"] is True
     assert out["better"] == "shelf-a"
+    assert out["difference"] == pytest.approx(0.25 - 0.05)
 
 
 def test_comparison_refuses_an_unknown_zone(tmp_path):
