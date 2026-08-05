@@ -308,7 +308,7 @@ tiled mode practical on real hardware.
 
 fp16 was verified to match fp32 confidences to within 0.001, so it is on by default on CUDA.
 
-## Floor mapping (groundwork, no CLI yet)
+## Floor mapping
 
 A camera sees the store obliquely, so ten pixels means centimetres in the
 foreground and metres down the aisle. Every spatial question (how far, how fast,
@@ -320,10 +320,30 @@ between points in the image and the same points on the store's floor plan solve
 for it, and stores already have floor plans, so nothing is reconstructed from
 pixels.
 
+Click a feature on the floor, type where it sits on the store plan, repeat:
+
+```bash
+uv run patron floorplan data/my-store.mp4 --out data/my-store.floor.json
+```
+
+| Key | What it does |
+|---|---|
+| click | add a point, then type its plan coordinates |
+| `w` | rectified preview, the calibration check |
+| `u` | undo the last point |
+| `s` | save and quit |
+| `q` | quit without saving |
+
+Click floor features only: tile corners, floor markings, door thresholds. A
+shelf edge or the top of a display is not on the ground plane, and a homography
+maps one plane to another, so one point off the floor skews the whole mapping.
+
+Then use it:
+
 ```python
 from patron.floor import FloorMap
 
-floor = FloorMap.load("data/store.floor.json")
+floor = FloorMap.load("data/my-store.floor.json")
 positions = floor.project_people(frame_result)   # {track_id: (x, y)} in metres
 ```
 
@@ -340,10 +360,11 @@ Three things this refuses to do, all of them deliberate:
   edge. Reporting `0.000` there would be a confident number standing in for no
   evidence. The fifth point is what buys a residual.
 
-Since four points cannot check themselves, `floorview.rectify` warps the frame
-onto the floor plane so the calibration can be judged by eye: if the floor's own
-tiles and joints come out square and parallel, the points were on the ground
-plane. If they fan out, they were not.
+Since four points cannot check themselves, `w` in the calibrator warps the frame
+onto the floor plane so it can be judged by eye: if the floor's own tiles and
+joints come out square and parallel, the points were on the ground plane. If
+they fan out, they were not. The HUD says `UNVERIFIABLE` at four points rather
+than showing a reassuring zero, and saving with four prints the same warning.
 
 Verified on `people-walking.mp4`: converging tile lines rectify to parallel, and
 34 tracked people project to plan-view paths that run straight, which is what
@@ -353,8 +374,8 @@ height and only the floor is being mapped. Their feet land correctly and nothing
 above the ankle does, which is the foot-point rule made visible.
 
 This is the layer a multi-camera bird's-eye view sits on: several cameras
-sharing one floor coordinate space. Calibration is still hand-written JSON,
-there is no click-to-calibrate command yet.
+sharing one floor coordinate space. Floor positions are not yet written to the
+event store, so paths and speed are computable but not persisted.
 
 ## Stack
 

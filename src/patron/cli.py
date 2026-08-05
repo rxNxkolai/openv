@@ -662,6 +662,174 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _calibration_status(floor_map, point_count: int, units: str) -> tuple[str, bool]:
+    """HUD line for the calibrator, and whether it should read as a warning.
+
+    Extracted so the guarantee is testable: a four-point calibration must never
+    present as verified. It fits exactly by construction, so reporting its
+    reprojection error would show a reassuring 0.000 for a mapping nothing has
+    checked, including one clicked entirely on shelf edges.
+    """
+    from patron.floor import MIN_CORRESPONDENCES
+
+    if point_count < MIN_CORRESPONDENCES:
+        return f"{point_count}/{MIN_CORRESPONDENCES} points, need more", True
+    if floor_map is None:
+        return "points are degenerate, spread them out", True
+    if not floor_map.is_verifiable:
+        return f"{MIN_CORRESPONDENCES} points: exact by construction, UNVERIFIABLE. add a 5th", True
+
+    error = floor_map.reprojection_error
+    return f"{point_count} points, error {error:.3f}{units}", error >= 0.25
+
+
+def _cmd_floorplan(args: argparse.Namespace) -> int:
+    """Calibrate the mapping from camera pixels to store floor coordinates.
+
+    Click a feature on the floor, type where it sits on the store plan, repeat.
+
+    Two things this deliberately makes hard to skip. Four points fit a homography
+    exactly whatever they are, so a four-point calibration reports no error and
+    cannot be checked: the HUD says so rather than showing a reassuring zero. And
+    the rectified preview is the manual check, because a calibration clicked on
+    shelf edges instead of the floor looks fine in every number and obvious the
+    moment the floor is warped flat.
+    """
+    import cv2
+    import numpy as np
+
+    from patron.floor import MIN_CORRESPONDENCES, FloorMap
+    from patron.floorview import rectify
+
+    cap = cv2.VideoCapture(args.source)
+    if not cap.isOpened():
+        print(f"error: could not open {args.source}", file=sys.stderr)
+        return 1
+    cap.set(cv2.CAP_PROP_POS_FRAMES, args.frame)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        print(f"error: could not read frame {args.frame}", file=sys.stderr)
+        return 1
+
+    height, width = frame.shape[:2]
+    scale = min(1.0, 1600 / max(width, height))
+    view = cv2.resize(frame, (int(width * scale), int(height * scale)))
+
+    pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    pending: list[tuple[int, int]] = []
+
+    def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN and not pending:
+            pending.append((x, y))
+
+    window = "patron floorplan"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window, view.shape[1], view.shape[0])
+    cv2.setMouseCallback(window, on_mouse)
+
+    print("click a point ON THE FLOOR, then type its plan coordinates")
+    print("floor features only: tile corners, floor markings, door thresholds.")
+    print("a shelf edge or the top of a display is not on the ground plane.\n")
+    print("u = undo last  |  w = rectified preview  |  s = save and quit  |  q = quit")
+
+    floor_map: FloorMap | None = None
+
+    def rebuild() -> FloorMap | None:
+        if len(pairs) < MIN_CORRESPONDENCES:
+            return None
+        try:
+            return FloorMap(tuple(pairs), units=args.units)
+        except ValueError as exc:
+            print(f"  cannot solve: {exc}")
+            return None
+
+    while True:
+        canvas = view.copy()
+
+        for i, (image_point, floor_point) in enumerate(pairs):
+            px = (int(image_point[0] * scale), int(image_point[1] * scale))
+            cv2.drawMarker(canvas, px, (0, 220, 255), cv2.MARKER_CROSS, 18, 2)
+            cv2.putText(
+                canvas,
+                f"{i}: {floor_point[0]:g},{floor_point[1]:g}",
+                (px[0] + 8, px[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA,
+            )
+
+        status, warn = _calibration_status(floor_map, len(pairs), args.units)
+        colour = (0, 165, 255) if warn else (0, 255, 128)
+
+        cv2.putText(
+            canvas, status, (10, 28),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2, cv2.LINE_AA,
+        )
+        cv2.imshow(window, canvas)
+        key = cv2.waitKey(20) & 0xFF
+
+        if pending:
+            x, y = pending.pop()
+            source_point = (x / scale, y / scale)
+            print(f"\nclicked ({source_point[0]:.0f}, {source_point[1]:.0f})")
+            answer = input(f"  plan coordinates in {args.units}, as 'x y' or 'x,y': ")
+            try:
+                fx, fy = (float(v) for v in answer.replace(",", " ").split())
+            except ValueError:
+                print("  skipped, need two numbers")
+                continue
+            pairs.append((source_point, (fx, fy)))
+            floor_map = rebuild()
+            if floor_map is not None and floor_map.is_verifiable:
+                print(f"  error now {floor_map.reprojection_error:.3f}{args.units}")
+
+        elif key == ord("u") and pairs:
+            removed = pairs.pop()
+            floor_map = rebuild()
+            print(f"removed point at {removed[1]}")
+
+        elif key == ord("w"):
+            if floor_map is None:
+                print("need a solvable calibration first")
+                continue
+            # Extent from the plan points themselves, padded, so the preview
+            # frames whatever area was actually calibrated.
+            xs = [p[1][0] for p in pairs]
+            ys = [p[1][1] for p in pairs]
+            pad = 0.35 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+            extent = (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+            ppu = 900 / max(extent[2] - extent[0], extent[3] - extent[1])
+            cv2.imshow("rectified floor", rectify(frame, floor_map, extent, ppu))
+            print("preview: the floor's own tiles and joints should come out")
+            print("square and parallel. if they fan out, points were off the floor.")
+
+        elif key == ord("s"):
+            if floor_map is None:
+                print(f"need at least {MIN_CORRESPONDENCES} workable points to save")
+                continue
+            break
+
+        elif key == ord("q"):
+            cv2.destroyAllWindows()
+            print("quit without saving")
+            return 0
+
+    cv2.destroyAllWindows()  # closes the rectified preview too, if it was opened
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    floor_map.save(out_path)
+
+    print(f"\nsaved {len(pairs)} correspondences to {out_path}")
+    if floor_map.is_verifiable:
+        print(f"reprojection error {floor_map.reprojection_error:.3f}{args.units}")
+    else:
+        print(
+            "WARNING: 4 points fit exactly whatever they are, so this calibration "
+            "has not been checked by anything. Add a fifth point to get a residual."
+        )
+    return 0
+
+
 def _cmd_zones(args: argparse.Namespace) -> int:
     """Draw zone polygons on a still frame from the source."""
     import cv2
@@ -942,6 +1110,19 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the MJPG request, only if the camera misbehaves with it",
     )
     record.set_defaults(func=_cmd_record)
+
+    floorplan = sub.add_parser(
+        "floorplan", help="calibrate camera pixels to store floor coordinates"
+    )
+    floorplan.add_argument("source", help="video file or webcam:0 to calibrate on")
+    floorplan.add_argument(
+        "--out", default="data/store.floor.json", help="where to save the calibration"
+    )
+    floorplan.add_argument("--frame", type=int, default=0, help="frame to calibrate on")
+    floorplan.add_argument(
+        "--units", default="m", help="units of the plan coordinates (default: m)"
+    )
+    floorplan.set_defaults(func=_cmd_floorplan)
 
     zones = sub.add_parser("zones", help="draw zone polygons on a frame")
     zones.add_argument("source", help="video file to draw zones on")
