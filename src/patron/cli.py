@@ -842,6 +842,24 @@ def _cmd_digest(args: argparse.Namespace) -> int:
     else:
         print(digest.render())
 
+    if args.webhook or args.dry_run:
+        from patron.deliver import build_payload, send
+
+        payload = build_payload(digest, args.format)
+        if args.dry_run:
+            print("\n--- would post exactly this ---")
+            print(json.dumps(payload, indent=2))
+            if not digest.worth_sending:
+                print("\n(and would not actually post it: nothing worth sending)")
+            return 0 if digest.worth_sending else 2
+
+        result = send(digest, args.webhook, fmt=args.format)
+        print(f"\nwebhook: {result.detail}")
+        if not result.ok:
+            # A digest that silently fails to post is worse than one never
+            # scheduled: the numbers look attended to and nobody is reading them.
+            return 1
+
     return 0 if digest.worth_sending else 2
 
 
@@ -1509,6 +1527,23 @@ def main(argv: list[str] | None = None) -> int:
         "--compare-with", type=int, metavar="SESSION", help="compare against this session"
     )
     digest.add_argument("--json", action="store_true", help="emit JSON for a connector")
+    digest.add_argument(
+        "--webhook",
+        metavar="URL",
+        help="POST the digest here. Slack, Discord, Teams and Google Chat "
+        "incoming webhooks all accept the default text format",
+    )
+    digest.add_argument(
+        "--format",
+        default="text",
+        choices=["text", "json"],
+        help="text posts {\"text\": ...}, json posts the full structure",
+    )
+    digest.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print exactly what would be posted, and post nothing",
+    )
     digest.set_defaults(func=_cmd_digest)
 
     sessions = sub.add_parser("sessions", help="list recorded sessions")

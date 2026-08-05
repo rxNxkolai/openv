@@ -237,9 +237,25 @@ shelf that was a problem, was changed, and is no longer a problem has by
 definition dropped out of the current findings, and looking only at those would
 announce every failure and no success.
 
-This module decides and formats. It does not send. Delivery is a connector's job,
-and keeping the decision separate means Slack, email and a webhook inherit the
-same judgement rather than each inventing their own.
+To actually send it:
+
+```bash
+uv run patron digest --db out/patron.db --compare --dry-run
+uv run patron digest --db out/patron.db --compare --webhook "$SLACK_WEBHOOK_URL"
+```
+
+Slack, Discord, Teams and Google Chat incoming webhooks all accept the default
+`{"text": ...}` body, so there is no per-vendor adapter. `--format json` posts
+the whole structure instead. `--dry-run` prints the exact body and sends nothing.
+
+A digest that is not worth sending is not sent, and that is a success with
+nothing done rather than an error, because scheduled jobs run on quiet days too.
+A send that fails is reported and exits non-zero: numbers that look attended to
+and are not being read are worse than numbers nobody scheduled.
+
+**What leaves the machine:** zone names, shopper counts, findings and verdicts.
+No images, no frames, no track identifiers, nothing about any individual. A test
+asserts this rather than trusting the sentence.
 
 ### Did the change work?
 
