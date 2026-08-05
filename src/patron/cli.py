@@ -809,6 +809,42 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     return 1 if answer.truncated else 0
 
 
+def _cmd_digest(args: argparse.Namespace) -> int:
+    """What is worth telling someone about this session. Needs no model.
+
+    Exit code 0 means there is something to send and 2 means there is not, so a
+    scheduled job can branch on it without parsing the output. An automation
+    that posts "nothing to report" every morning teaches people to mute the
+    channel before anything matters.
+    """
+    import json
+
+    from patron.digest import build_digest
+    from patron.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        session_id = None if args.all_sessions else store.latest_session_id()
+
+        compare_with = args.compare_with
+        if compare_with is None and args.compare:
+            recent = [s["id"] for s in store.sessions()]
+            previous = [s for s in recent if s != session_id]
+            compare_with = previous[0] if previous else None
+
+        digest = build_digest(store, session_id, compare_with=compare_with)
+
+    if args.json:
+        print(json.dumps(digest.as_dict(), indent=2))
+    else:
+        print(digest.render())
+
+    return 0 if digest.worth_sending else 2
+
+
 def _cmd_sessions(args: argparse.Namespace) -> int:
     """List what has been recorded, so session ids stop being magic numbers."""
     from patron.store import EventStore
@@ -1456,6 +1492,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     measure.add_argument("--db", default="out/patron.db", help="event store to read")
     measure.set_defaults(func=_cmd_measure)
+
+    digest = sub.add_parser(
+        "digest", help="what is worth telling someone, or nothing at all"
+    )
+    digest.add_argument("--db", default="out/patron.db", help="event store to read")
+    digest.add_argument(
+        "--all-sessions", action="store_true", help="digest every session together"
+    )
+    digest.add_argument(
+        "--compare",
+        action="store_true",
+        help="measure worrying zones against the previous session",
+    )
+    digest.add_argument(
+        "--compare-with", type=int, metavar="SESSION", help="compare against this session"
+    )
+    digest.add_argument("--json", action="store_true", help="emit JSON for a connector")
+    digest.set_defaults(func=_cmd_digest)
 
     sessions = sub.add_parser("sessions", help="list recorded sessions")
     sessions.add_argument("--db", default="out/patron.db", help="event store to read")

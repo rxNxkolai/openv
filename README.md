@@ -216,6 +216,31 @@ SKUs or prices to cover that gap.
 
 If credentials are missing, `analyze` is unaffected: it needs no model at all.
 
+### Telling someone
+
+```bash
+uv run patron digest --db out/patron.db --compare
+```
+
+A finding nobody reads is worth nothing. The hard part is not the sending, it is
+deciding what deserves to be sent, and there are two ways to get it wrong:
+listing every zone buries the line that mattered, and posting "nothing to report"
+every morning teaches people to mute the channel before anything matters.
+
+So a digest with nothing to say says nothing, and **exit code 2 means do not
+send** while 0 means do. A scheduled job branches on that without parsing
+anything. `--json` emits the same decision for a connector.
+
+Only high and medium findings reach someone unprompted. A zone is re-measured
+against the previous session if it is worrying now **or was worrying then**: a
+shelf that was a problem, was changed, and is no longer a problem has by
+definition dropped out of the current findings, and looking only at those would
+announce every failure and no success.
+
+This module decides and formats. It does not send. Delivery is a connector's job,
+and keeping the decision separate means Slack, email and a webhook inherit the
+same judgement rather than each inventing their own.
+
 ### Did the change work?
 
 ```bash
