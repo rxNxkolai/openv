@@ -61,14 +61,29 @@ def _cmd_track(args: argparse.Namespace) -> int:
         zones = None
         visit_tracker = None
         reach_tracker = None
+        position_recorder = None
         store = None
         session_id = None
         visits_written = 0
         reaches_written = 0
+        positions_written = 0
+
+        if args.floor:
+            from patron.floor import FloorMap, PositionRecorder
+
+            floor_map = FloorMap.load(args.floor)
+            position_recorder = PositionRecorder(
+                floor_map, min_interval_s=args.position_interval
+            )
+            checked = (
+                f"error {floor_map.reprojection_error:.3f}{floor_map.units}"
+                if floor_map.is_verifiable
+                else "UNVERIFIABLE, only 4 points"
+            )
+            print(f"floor    {args.floor} ({checked})")
 
         if args.zones:
             from patron.events import ReachTracker, VisitTracker
-            from patron.store import EventStore
             from patron.zones import ZoneSet
 
             zones = ZoneSet.load(args.zones)
@@ -95,6 +110,11 @@ def _cmd_track(args: argparse.Namespace) -> int:
                     min_arm_extension=args.min_arm_extension,
                     frame_size=(info.width, info.height),
                 )
+
+        # The store is opened for zones or for floor positions. Opening it only
+        # for zones would make `--floor` alone record nothing at all, silently.
+        if args.zones or args.floor:
+            from patron.store import EventStore
 
             store = EventStore(args.db)
             session_id = store.start_session(
@@ -143,6 +163,11 @@ def _cmd_track(args: argparse.Namespace) -> int:
                     if done:
                         reaches_written += store.add_reaches(session_id, done)
 
+                if position_recorder is not None and store is not None:
+                    sampled = position_recorder.update(result)
+                    if sampled:
+                        positions_written += store.add_positions(session_id, sampled)
+
                 if writer is not None or args.show:
                     canvas = renderer.annotate(frame, result)
                     if writer is not None:
@@ -190,6 +215,8 @@ def _cmd_track(args: argparse.Namespace) -> int:
         print(f"zone visits        {visits_written}")
         if reach_tracker is not None:
             print(f"shelf reaches      {reaches_written}")
+    if position_recorder is not None:
+        print(f"floor positions    {positions_written}")
     if args.out:
         print(f"written            {args.out}")
 
@@ -1027,6 +1054,18 @@ def main(argv: list[str] | None = None) -> int:
         "shelf zone counts as a reach. 0 disables the check (default: 2.5)",
     )
     track.add_argument("--zones", help="zones.json, enables visit capture")
+    track.add_argument(
+        "--floor",
+        help="floor.json from `patron floorplan`, records where shoppers stood "
+        "in store floor coordinates",
+    )
+    track.add_argument(
+        "--position-interval",
+        type=float,
+        default=1.0,
+        help="seconds between floor position samples per shopper. Paths and "
+        "dwell are fine at 1Hz and per-frame rows buy nothing (default: 1.0)",
+    )
     track.add_argument(
         "--db", default="out/patron.db", help="event store path (default: out/patron.db)"
     )

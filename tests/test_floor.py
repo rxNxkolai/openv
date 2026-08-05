@@ -217,6 +217,104 @@ def test_a_shopper_above_the_horizon_is_omitted_not_guessed():
     assert 2 not in positions
 
 
+def _walker(track_id, x, frame, t_s):
+    from patron.types import Box, FrameResult, TrackedPerson
+
+    return FrameResult(
+        frame_index=frame,
+        timestamp_s=t_s,
+        people=(
+            TrackedPerson(
+                track_id=track_id,
+                box=Box(x1=x - 40, y1=300.0, x2=x + 40, y2=500.0),
+                confidence=0.9,
+            ),
+        ),
+    )
+
+
+def test_positions_are_sampled_not_recorded_every_frame():
+    from patron.floor import PositionRecorder
+
+    recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=1.0)
+
+    # 30 frames at 30fps is one second of footage.
+    sampled = []
+    for frame in range(30):
+        sampled.extend(recorder.update(_walker(1, 500.0, frame, frame / 30.0)))
+
+    # One on arrival, one when the interval elapses. Not thirty.
+    assert len(sampled) == 1
+    assert sampled[0].track_id == 1
+    assert sampled[0].frame == 0
+
+
+def test_the_interval_is_per_track_not_global():
+    """A shopper arriving midway is recorded on arrival.
+
+    A single global clock would make them wait for a tick shared with everyone
+    already in frame, so their path would start late by up to the interval.
+    """
+    from patron.floor import PositionRecorder
+
+    recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=1.0)
+
+    recorder.update(_walker(1, 500.0, 0, 0.0))
+    late = recorder.update(_walker(2, 400.0, 15, 0.5))
+
+    assert [p.track_id for p in late] == [2]
+
+
+def test_a_position_carries_where_and_when():
+    from patron.floor import PositionRecorder
+
+    recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=0.0)
+
+    [position] = recorder.update(_walker(3, 500.0, 12, 0.4))
+
+    expected = apply(H_TRUE, (500.0, 500.0))
+    assert (position.x, position.y) == pytest.approx(expected, abs=1e-6)
+    assert position.frame == 12
+    assert position.t_s == pytest.approx(0.4)
+
+
+def test_forgetting_a_track_clears_its_sampling_state():
+    from patron.floor import PositionRecorder
+
+    recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=10.0)
+
+    recorder.update(_walker(1, 500.0, 0, 0.0))
+    assert recorder.update(_walker(1, 500.0, 1, 0.1)) == []
+
+    recorder.forget({1})
+
+    # Track ids die when a person leaves frame, so nothing about them persists.
+    assert len(recorder.update(_walker(1, 500.0, 2, 0.2))) == 1
+
+
+def test_a_shopper_above_the_horizon_records_no_position():
+    from patron.floor import PositionRecorder
+
+    recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=0.0)
+
+    assert recorder.update(_walker(1, 500.0, 0, 0.0)) != []
+    # Box bottom at y=2600 is past the horizon at y=2000.
+    from patron.types import Box, FrameResult, TrackedPerson
+
+    impossible = FrameResult(
+        frame_index=1,
+        timestamp_s=0.1,
+        people=(
+            TrackedPerson(
+                track_id=9,
+                box=Box(x1=460.0, y1=2400.0, x2=540.0, y2=2600.0),
+                confidence=0.9,
+            ),
+        ),
+    )
+    assert recorder.update(impossible) == []
+
+
 def test_real_units_survive_the_mapping():
     """A rectangle of known size on the floor must measure that size after
     projection, because everything downstream (distance, speed, floor area)

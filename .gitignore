@@ -18,10 +18,11 @@ models/
 data/*
 out/
 
-# Zone polygons are small text config, not footage, and they are the other half
-# of how the test fixtures were produced. Without them the fixtures cannot be
-# regenerated or argued with.
+# Zone polygons and floor calibrations are small text config, not footage, and
+# they are the other half of how the test fixtures were produced. Without them
+# the fixtures cannot be regenerated or argued with.
 !data/*.zones.json
+!data/*.floor.json
 
 # Env
 .env

@@ -1,4 +1,5 @@
 from patron.events import ZoneVisit
+from patron.floor import FloorPosition
 from patron.store import EventStore
 
 
@@ -11,6 +12,73 @@ def visit(track_id: int, zone: str, entered_s: float, exited_s: float) -> ZoneVi
         exited_frame=int(exited_s * 30),
         exited_s=exited_s,
     )
+
+
+def position(track_id: int, t_s: float, x: float, y: float) -> FloorPosition:
+    return FloorPosition(
+        track_id=track_id, frame=int(t_s * 30), t_s=t_s, x=x, y=y
+    )
+
+
+def test_paths_come_back_grouped_and_in_time_order(tmp_path):
+    with EventStore(tmp_path / "e.db") as store:
+        session = store.start_session("test.mp4", fps=30.0, width=1920, height=1080)
+        # Inserted out of order on purpose.
+        store.add_positions(
+            session,
+            [
+                position(1, 2.0, 3.0, 1.0),
+                position(2, 0.0, 9.0, 9.0),
+                position(1, 0.0, 1.0, 1.0),
+                position(1, 1.0, 2.0, 1.0),
+                position(2, 1.0, 9.5, 8.0),
+            ],
+        )
+        paths = store.paths(session)
+
+    assert set(paths) == {1, 2}
+    assert [t for t, _x, _y in paths[1]] == [0.0, 1.0, 2.0]
+    assert [x for _t, x, _y in paths[1]] == [1.0, 2.0, 3.0]
+
+
+def test_a_single_sighting_is_not_a_path(tmp_path):
+    with EventStore(tmp_path / "e.db") as store:
+        session = store.start_session("test.mp4", fps=30.0, width=1920, height=1080)
+        store.add_positions(
+            session,
+            [
+                position(1, 0.0, 1.0, 1.0),
+                position(1, 1.0, 2.0, 1.0),
+                position(7, 0.0, 5.0, 5.0),  # seen once, a detection blip
+            ],
+        )
+        paths = store.paths(session)
+        # Dropped from paths, but still counted: the sighting happened.
+        assert store.position_count(session) == 3
+
+    # A shopper who teleported in and vanished is noise, not a walked path.
+    assert set(paths) == {1}
+
+
+def test_positions_are_scoped_to_their_session(tmp_path):
+    with EventStore(tmp_path / "e.db") as store:
+        first = store.start_session("a.mp4", fps=30.0, width=1920, height=1080)
+        second = store.start_session("b.mp4", fps=30.0, width=1920, height=1080)
+        store.add_positions(first, [position(1, 0.0, 1.0, 1.0), position(1, 1.0, 2.0, 2.0)])
+        store.add_positions(second, [position(1, 0.0, 8.0, 8.0), position(1, 1.0, 9.0, 9.0)])
+
+        # Track id 1 exists in both and means a different person in each. Nothing
+        # may join them. See CLAUDE.md constraint 2.
+        assert store.paths(first)[1][0][1] == 1.0
+        assert store.paths(second)[1][0][1] == 8.0
+        assert store.position_count(first) == 2
+        assert store.position_count() == 4
+
+
+def test_adding_no_positions_is_not_an_error(tmp_path):
+    with EventStore(tmp_path / "e.db") as store:
+        session = store.start_session("test.mp4", fps=30.0, width=1920, height=1080)
+        assert store.add_positions(session, []) == 0
 
 
 def test_summary_counts_shoppers_separately_from_visits(tmp_path):

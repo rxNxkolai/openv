@@ -338,14 +338,32 @@ Click floor features only: tile corners, floor markings, door thresholds. A
 shelf edge or the top of a display is not on the ground plane, and a homography
 maps one plane to another, so one point off the floor skews the whole mapping.
 
-Then use it:
+Then record where shoppers actually stood:
+
+```bash
+uv run patron track data/my-store.mp4 --zones data/my.zones.json \
+  --floor data/my-store.floor.json --db out/patron.db
+```
+
+Positions are sampled at 1Hz per shopper rather than written every frame.
+Behaviour analytics does not need 30Hz, and per-frame rows would be thirty times
+the storage for no extra insight while turning an event store into a movement
+database. `--position-interval` tunes it.
+
+Read the paths back with no video involved, which is what any later question has
+to rely on:
 
 ```python
-from patron.floor import FloorMap
+from patron.store import EventStore
 
-floor = FloorMap.load("data/my-store.floor.json")
-positions = floor.project_people(frame_result)   # {track_id: (x, y)} in metres
+with EventStore("out/patron.db") as store:
+    paths = store.paths(store.latest_session_id())   # {track_id: [(t, x, y)]}
 ```
+
+Because positions carry time, speed falls out of them. Measured on
+`people-walking.mp4`: median 1.17 tiles per second, which at a roughly 1.2m
+floor slab is about 1.4 m/s. Nothing was fitted to produce that, so ordinary
+walking pace arriving on its own is a reasonable check that the scale is honest.
 
 Three things this refuses to do, all of them deliberate:
 
@@ -374,8 +392,7 @@ height and only the floor is being mapped. Their feet land correctly and nothing
 above the ankle does, which is the foot-point rule made visible.
 
 This is the layer a multi-camera bird's-eye view sits on: several cameras
-sharing one floor coordinate space. Floor positions are not yet written to the
-event store, so paths and speed are computable but not persisted.
+sharing one floor coordinate space.
 
 ## Stack
 

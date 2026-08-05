@@ -59,6 +59,27 @@ CREATE TABLE IF NOT EXISTS reaches (
 
 CREATE INDEX IF NOT EXISTS idx_reaches_session_zone ON reaches(session_id, zone);
 
+-- Where shoppers actually stood, in store floor coordinates rather than camera
+-- pixels, so distance and speed mean something and several cameras can describe
+-- one space. Sampled at a bounded rate rather than recorded per frame: 1Hz is
+-- enough for paths and dwell, and per-frame rows would make this a movement
+-- database rather than an event store.
+--
+-- Still session-scoped and still anonymous. A floor coordinate says where
+-- somebody stood, not who they were.
+CREATE TABLE IF NOT EXISTS positions (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id),
+    track_id    INTEGER NOT NULL,
+    frame       INTEGER NOT NULL,
+    t_s         REAL    NOT NULL,
+    x           REAL    NOT NULL,
+    y           REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_positions_session_track
+    ON positions(session_id, track_id, t_s);
+
 -- Agent output. `status` starts at 'proposed' and there is deliberately no code
 -- path that sets it to 'approved' automatically: a recommendation becomes an
 -- action only when a human says so. That gate is the liability boundary for an
@@ -110,6 +131,49 @@ class EventStore:
 
     def add_visits(self, session_id: int, visits: Iterable[ZoneVisit]) -> int:
         return self._add_spans("visits", session_id, visits)
+
+    def add_positions(self, session_id: int, positions: Iterable) -> int:
+        rows = [(session_id, p.track_id, p.frame, p.t_s, p.x, p.y) for p in positions]
+        if not rows:
+            return 0
+        self._conn.executemany(
+            "INSERT INTO positions (session_id, track_id, frame, t_s, x, y)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        self._conn.commit()
+        return len(rows)
+
+    def paths(
+        self, session_id: int | None = None, min_points: int = 2
+    ) -> dict[int, list[tuple[float, float, float]]]:
+        """Walked paths by track id, each a list of (t_s, x, y) in floor units.
+
+        `min_points` drops tracks seen once, which are a detection blip rather
+        than a path and would otherwise show up as a shopper who teleported in
+        and vanished.
+        """
+        where, params = ("WHERE session_id = ?", (session_id,)) if session_id else ("", ())
+        rows = self._conn.execute(
+            "SELECT track_id, t_s, x, y FROM positions"  # noqa: S608
+            f" {where} ORDER BY track_id, t_s",
+            params,
+        ).fetchall()
+
+        out: dict[int, list[tuple[float, float, float]]] = {}
+        for row in rows:
+            out.setdefault(row["track_id"], []).append(
+                (row["t_s"], row["x"], row["y"])
+            )
+        return {k: v for k, v in out.items() if len(v) >= min_points}
+
+    def position_count(self, session_id: int | None = None) -> int:
+        where, params = ("WHERE session_id = ?", (session_id,)) if session_id else ("", ())
+        return int(
+            self._conn.execute(
+                f"SELECT COUNT(*) FROM positions {where}", params  # noqa: S608
+            ).fetchone()[0]
+        )
 
     def _add_spans(
         self, table: str, session_id: int, spans: Iterable[ZoneVisit]

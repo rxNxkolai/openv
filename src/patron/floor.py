@@ -32,6 +32,7 @@ an identity.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,12 @@ import numpy as np
 from patron.types import FrameResult
 
 MIN_CORRESPONDENCES = 4
+
+# Positions are sampled rather than recorded every frame. Behaviour analytics
+# does not need 30Hz: paths, speed and floor-area productivity are all fine at
+# 1Hz, and a per-frame record would be thirty times the rows for no extra
+# insight while turning an event store into a movement database.
+DEFAULT_SAMPLE_INTERVAL_S = 1.0
 
 # Below this the perspective divide is at or behind the horizon, where the
 # ground plane does not project to a finite point.
@@ -192,3 +199,66 @@ class FloorMap:
         error = self.reprojection_error
         quality = "unverifiable" if error is None else f"error {error:.3f}{self.units}"
         return f"FloorMap({len(self.correspondences)} points, {quality})"
+
+
+@dataclass(frozen=True)
+class FloorPosition:
+    """One shopper at one place on the floor at one moment.
+
+    Session-scoped like `track_id` and carrying no identity: a floor coordinate
+    says where somebody stood, not who they were. See CLAUDE.md constraint 2.
+    """
+
+    track_id: int
+    frame: int
+    t_s: float
+    x: float
+    y: float
+
+
+class PositionRecorder:
+    """Samples floor positions at a bounded rate.
+
+    Consumes the same `FrameResult` stream everything else downstream does, and
+    holds the sampling decision in one place so the storage cost of the spatial
+    layer is a single number rather than an emergent property of frame rate.
+    """
+
+    def __init__(
+        self,
+        floor_map: FloorMap,
+        min_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
+    ) -> None:
+        self.floor_map = floor_map
+        self.min_interval_s = min_interval_s
+        self._last_sampled: dict[int, float] = {}
+
+    def update(self, result: FrameResult) -> list[FloorPosition]:
+        out: list[FloorPosition] = []
+
+        for track_id, (x, y) in self.floor_map.project_people(result).items():
+            previous = self._last_sampled.get(track_id)
+            # Sampled per track, not globally. A shopper who appears midway
+            # through should be recorded on arrival rather than waiting for a
+            # clock shared with everybody already in frame.
+            if previous is not None and result.timestamp_s - previous < self.min_interval_s:
+                continue
+            self._last_sampled[track_id] = result.timestamp_s
+            out.append(
+                FloorPosition(
+                    track_id=track_id, frame=result.frame_index,
+                    t_s=result.timestamp_s, x=x, y=y,
+                )
+            )
+
+        return out
+
+    def forget(self, track_ids: set[int]) -> None:
+        """Drop sampling state for tracks that have left.
+
+        Track ids die when a person leaves frame and are never reused across
+        sessions, so retaining their timing would be holding state about people
+        who are gone.
+        """
+        for track_id in track_ids:
+            self._last_sampled.pop(track_id, None)
