@@ -482,6 +482,8 @@ def _cmd_live(args: argparse.Namespace) -> int:
         pose=args.pose,
         loop=not args.no_loop,
         min_arm_extension=args.min_arm_extension,
+        floor_path=args.floor,
+        position_interval=args.position_interval,
     )
     app = create_app(engine)
 
@@ -1166,6 +1168,17 @@ def main(argv: list[str] | None = None) -> int:
         default=2.5,
         help="wrist-to-shoulder distance, in shoulder widths, before a hand in a "
         "shelf zone counts as a reach. 0 disables the check (default: 2.5)",
+    )
+    live.add_argument(
+        "--floor",
+        help="floor.json from `patron floorplan`, enables the plan view and "
+        "records where shoppers stood",
+    )
+    live.add_argument(
+        "--position-interval",
+        type=float,
+        default=1.0,
+        help="seconds between floor position samples per shopper (default: 1.0)",
     )
     live.add_argument(
         "--db", default="out/patron.db", help="event store for the live session"

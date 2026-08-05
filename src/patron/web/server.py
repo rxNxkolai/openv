@@ -67,6 +67,12 @@ def create_app(engine: LiveEngine) -> FastAPI:
     def get_zones() -> JSONResponse:
         return JSONResponse(engine.zones_payload())
 
+    @app.get("/api/floor")
+    def get_floor() -> JSONResponse:
+        # Separate from /api/stats because it is polled at a different rate and
+        # is empty on any camera without a calibration.
+        return JSONResponse(engine.floor_payload())
+
     @app.post("/api/zones")
     def post_zones(payload: dict[str, Any]) -> JSONResponse:
         zones = payload.get("zones", [])

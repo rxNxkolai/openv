@@ -124,6 +124,12 @@
   </div>
 
   <aside class="rail">
+    <section class="sec" id="floorSec" style="display:none">
+      <h2>floor plan</h2>
+      <canvas id="floorCv" width="320" height="320"></canvas>
+      <div class="empty" id="floorNote"></div>
+    </section>
+
     <section class="sec">
       <div class="kpis">
         <div class="kpi"><b id="pnow">0</b><span>in frame</span></div>
@@ -347,6 +353,80 @@ async function tick(){
   }
 }
 
+/* ---------- floor plan ---------- */
+/* Positions arrive in store floor coordinates, not pixels, which is what will
+   eventually let several cameras draw into one of these. */
+const floorCv = document.getElementById('floorCv');
+const floorCtx = floorCv.getContext('2d');
+let floorOff = false;
+
+function floorToCanvas(extent, x, y){
+  const [minX, minY, maxX, maxY] = extent;
+  return [
+    (x - minX) / (maxX - minX) * floorCv.width,
+    // y flipped, so the plan reads the way a floor plan does.
+    (maxY - y) / (maxY - minY) * floorCv.height,
+  ];
+}
+
+function drawFloor(f){
+  const ctx = floorCtx, W = floorCv.width, H = floorCv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#15151a';
+  ctx.fillRect(0, 0, W, H);
+
+  const [minX, minY, maxX, maxY] = f.extent;
+
+  // Grid in real units, so distance on the plan is readable by eye.
+  ctx.strokeStyle = '#2a2a33';
+  ctx.lineWidth = 1;
+  for (let x = Math.ceil(minX); x <= maxX; x++){
+    const [cx] = floorToCanvas(f.extent, x, 0);
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+  }
+  for (let y = Math.ceil(minY); y <= maxY; y++){
+    const [, cy] = floorToCanvas(f.extent, 0, y);
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  }
+
+  ctx.strokeStyle = '#4a6b8a';
+  ctx.lineWidth = 1.5;
+  for (const t of f.trails){
+    ctx.beginPath();
+    t.points.forEach(([x, y], i) => {
+      const [cx, cy] = floorToCanvas(f.extent, x, y);
+      i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy);
+    });
+    ctx.stroke();
+  }
+
+  for (const p of f.positions){
+    const [cx, cy] = floorToCanvas(f.extent, p.x, p.y);
+    ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, 7);
+    ctx.fillStyle = '#ffc400'; ctx.fill();
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+async function floorTick(){
+  if (floorOff) return;
+  try {
+    const f = await (await fetch('/api/floor')).json();
+    if (!f.enabled){
+      // No calibration on this camera. Stop asking rather than poll forever.
+      floorOff = true;
+      return;
+    }
+    document.getElementById('floorSec').style.display = 'block';
+    drawFloor(f);
+    const note = document.getElementById('floorNote');
+    note.textContent = f.verified
+      ? `${f.positions.length} on floor · grid 1${f.units}`
+      : `${f.positions.length} on floor · grid 1${f.units} · calibration unverified, only 4 points`;
+    note.style.display = 'block';
+  } catch (e) { /* the next tick retries */ }
+}
+
 // An MJPEG stream never fires a reliable `load` event, so sizing the canvas off
 // that leaves it at 1x0 and existing zones render invisibly. Observing the element
 // covers first layout, first decoded frame, and window resizes in one path.
@@ -354,6 +434,8 @@ new ResizeObserver(fitCanvas).observe(img);
 loadZones();
 setInterval(tick, 700);
 tick();
+setInterval(floorTick, 700);
+floorTick();
 </script>
 </body>
 </html>

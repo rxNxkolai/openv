@@ -65,6 +65,7 @@ number meaningless against the clock the viewer is watching.
 |---|---|
 | `--source` | `webcam:N`, or a video file to replay |
 | `--pose` | enable reach detection on shelf zones |
+| `--floor` | floor.json, adds the plan view and records positions |
 | `--db PATH` | event store for the session (default `out/patron.db`) |
 | `--no-db` | do not persist; numbers vanish on exit |
 | `--no-loop` | stop at the end of a video file instead of rewinding |

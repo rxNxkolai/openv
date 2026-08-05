@@ -73,6 +73,8 @@ class LiveEngine:
         loop: bool = True,
         jpeg_quality: int = 80,
         min_arm_extension: float = DEFAULT_MIN_ARM_EXTENSION,
+        floor_path: str | Path | None = None,
+        position_interval: float = 1.0,
     ) -> None:
         self.source_spec = source
         self.width = width
@@ -83,6 +85,30 @@ class LiveEngine:
         self.loop = loop
         self.jpeg_quality = jpeg_quality
         self.min_arm_extension = min_arm_extension
+
+        # The plan view is opt-in per camera, because it needs a calibration and
+        # a camera without one should still run rather than refuse to start.
+        self._floor_map = None
+        self._floor_recorder = None
+        self._floor_extent: tuple[float, float, float, float] | None = None
+        self._floor_now: dict[int, tuple[float, float]] = {}
+        self._floor_trails: dict[int, list[tuple[float, float]]] = {}
+        self._floor_seen: dict[int, float] = {}
+        if floor_path is not None:
+            from patron.floor import FloorMap, PositionRecorder
+
+            self._floor_map = FloorMap.load(floor_path)
+            self._floor_recorder = PositionRecorder(
+                self._floor_map, min_interval_s=position_interval
+            )
+            # Framed on the calibrated area, padded, so the plan shows the floor
+            # that was actually surveyed rather than an arbitrary window.
+            xs = [c[1][0] for c in self._floor_map.correspondences]
+            ys = [c[1][1] for c in self._floor_map.correspondences]
+            pad = 0.35 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+            self._floor_extent = (
+                min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+            )
 
         self._conf = conf
         self._resolution = resolution
@@ -403,6 +429,10 @@ class LiveEngine:
                     for name in zones.shelf.containing(wrist):
                         occupancy[name] = occupancy.get(name, 0) + 1
 
+        floor_now, floor_sampled = self._project_floor(result)
+        if store is not None and session_id is not None and floor_sampled:
+            store.add_positions(session_id, floor_sampled)
+
         canvas = renderer.annotate(frame, result)
         ok, buffer = cv2.imencode(
             ".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
@@ -412,10 +442,71 @@ class LiveEngine:
             self._people_now = result.count
             self._seen_ids.update(p.track_id for p in result.people)
             self._occupancy = occupancy
+            self._floor_now = floor_now
             if ok:
                 self._jpeg = buffer.tobytes()
 
         self._record(done_visits, done_reaches)
+
+    # Trails are for looking at, not for recording, so they are held in memory
+    # and dropped once a shopper has been gone a few seconds. The durable copy
+    # is whatever the recorder sampled into the event store.
+    TRAIL_POINTS = 90
+    TRAIL_TTL_S = 4.0
+
+    def _project_floor(self, result: FrameResult) -> tuple[dict, list]:
+        """Current floor positions, plus whatever the sampler wants persisted."""
+        if self._floor_map is None:
+            return {}, []
+
+        now = self._floor_map.project_people(result)
+        sampled = (
+            self._floor_recorder.update(result)
+            if self._floor_recorder is not None
+            else []
+        )
+
+        for track_id, point in now.items():
+            trail = self._floor_trails.setdefault(track_id, [])
+            trail.append(point)
+            if len(trail) > self.TRAIL_POINTS:
+                del trail[: -self.TRAIL_POINTS]
+            self._floor_seen[track_id] = result.timestamp_s
+
+        stale = {
+            track_id
+            for track_id, seen in self._floor_seen.items()
+            if result.timestamp_s - seen > self.TRAIL_TTL_S
+        }
+        for track_id in stale:
+            self._floor_trails.pop(track_id, None)
+            self._floor_seen.pop(track_id, None)
+        if stale and self._floor_recorder is not None:
+            # Track ids die when a person leaves frame; nothing about them stays.
+            self._floor_recorder.forget(stale)
+
+        return now, sampled
+
+    def floor_payload(self) -> dict[str, Any]:
+        """Plan-view state for the browser, in floor coordinates."""
+        with self._lock:
+            if self._floor_map is None:
+                return {"enabled": False}
+            return {
+                "enabled": True,
+                "units": self._floor_map.units,
+                "extent": list(self._floor_extent),
+                "verified": self._floor_map.is_verifiable,
+                "positions": [
+                    {"track_id": t, "x": round(x, 3), "y": round(y, 3)}
+                    for t, (x, y) in self._floor_now.items()
+                ],
+                "trails": [
+                    {"track_id": t, "points": [[round(x, 3), round(y, 3)] for x, y in pts]}
+                    for t, pts in self._floor_trails.items()
+                    if len(pts) > 1
+                ],
+            }
 
     def _record(self, visits: list[ZoneSpan], reaches: list[ZoneSpan]) -> None:
         with self._lock:
