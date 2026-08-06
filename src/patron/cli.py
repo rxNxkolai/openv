@@ -1011,6 +1011,121 @@ def _cmd_fixture(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reach_threshold(args: argparse.Namespace) -> int:
+    """What do the fixtures say the reach threshold should be?
+
+    This analysis was run by hand three times while the threshold was being
+    argued about, which is three chances to do the arithmetic differently. It
+    reads the same `extension_ratio` the detector uses, so the number under
+    discussion is the number that ships.
+    """
+    import json
+    import math
+
+    from patron.events import (
+        DEFAULT_MIN_ARM_EXTENSION,
+        FRAME_EDGE_MARGIN_PX,
+        extension_ratio,
+    )
+    from patron.types import Pose
+
+    positives: list[tuple[float, str, int]] = []
+    negatives: list[tuple[float, str, int]] = []
+    arm_fractions: list[float] = []
+
+    for path_text in args.fixtures:
+        path = Path(path_text)
+        if not path.exists():
+            print(f"error: no fixture at {path}", file=sys.stderr)
+            return 1
+        data = json.loads(path.read_text(encoding="utf-8"))
+        frame_w, frame_h = data.get("frame_size", (0, 0))
+        clipped = usable = 0
+
+        for sample in data["samples"]:
+            x1, y1, x2, y2 = sample["box"]
+            m = FRAME_EDGE_MARGIN_PX
+            if frame_w and (
+                x1 <= m or y1 <= m or x2 >= frame_w - m or y2 >= frame_h - m
+            ):
+                # A truncated box has the wrong height, so its ratio is not
+                # comparable with the rest. Same rule the detector applies.
+                clipped += 1
+                continue
+
+            pose = Pose(points={k: tuple(v) for k, v in sample["points"].items()})
+            wrist = pose.get(f"{sample['side']}_wrist", data.get("min_wrist_confidence", 0.5))
+            if wrist is None:
+                continue
+            ratio = extension_ratio(pose, sample["side"], wrist, y2 - y1)
+            if ratio is None:
+                continue
+            usable += 1
+            entry = (ratio, path.name, sample["frame"])
+            (positives if sample["reach"] else negatives).append(entry)
+
+            if sample["reach"]:
+                shoulder = pose.get(f"{sample['side']}_shoulder", 0.5)
+                if shoulder and (y2 - y1) > 0:
+                    arm_fractions.append(math.dist(wrist, shoulder) / (y2 - y1))
+
+        reach_count = sum(1 for s in data["samples"] if s["reach"])
+        print(
+            f"{path.name:<28}{usable:>5} usable  "
+            f"{reach_count:>3} reach / {len(data['samples']) - reach_count:>3} not"
+            + (f"   ({clipped} edge-clipped, skipped)" if clipped else "")
+        )
+
+    if not positives or not negatives:
+        print(
+            "\nneed both labels to say anything about a threshold. "
+            f"Got {len(positives)} reach and {len(negatives)} not.",
+            file=sys.stderr,
+        )
+        return 1
+
+    lo_pos, hi_pos = min(positives)[0], max(positives)[0]
+    lo_neg, hi_neg = min(negatives)[0], max(negatives)[0]
+    print(f"\npooled: {len(positives)} reach, {len(negatives)} not\n")
+    print(f"{'':<10}{'min':>8}{'max':>8}")
+    print(f"{'reach':<10}{lo_pos:>8.2f}{hi_pos:>8.2f}")
+    print(f"{'not':<10}{lo_neg:>8.2f}{hi_neg:>8.2f}")
+
+    gap = lo_pos - hi_neg
+    if gap > 0:
+        print(f"\nseparable, margin {gap:.3f}")
+        print(f"suggested threshold  {(lo_pos + hi_neg) / 2:.2f}  (midpoint)")
+    else:
+        print(f"\nNOT separable: the ranges overlap by {-gap:.3f}")
+        print("No threshold divides these. A better signal is needed, not a")
+        print("better number. See CLAUDE.md on why arm extension is marginal.")
+
+    missed = [e for e in positives if e[0] < args.threshold]
+    false_reaches = [e for e in negatives if e[0] >= args.threshold]
+    print(
+        f"\nat {args.threshold:g}: {len(missed)} missed reach"
+        f"{'' if len(missed) == 1 else 'es'}, "
+        f"{len(false_reaches)} false reach{'' if len(false_reaches) == 1 else 'es'}"
+    )
+    for label, rows in (("missed", missed), ("false", false_reaches)):
+        for ratio, name, frame in sorted(rows)[:5]:
+            print(f"   {label:<7}{ratio:>6.2f}  {name} frame {frame}")
+
+    if arm_fractions:
+        lo, hi = min(arm_fractions), max(arm_fractions)
+        print(f"\nanatomy: reach arms are {lo:.2f} to {hi:.2f} of box height "
+              f"(a real arm is about 0.44)")
+        if lo > 0.48:
+            print("  These bodies are cut off, so every ratio above is inflated.")
+            print("  A threshold fitted to them will miss reaches on shoppers")
+            print("  whose whole body is visible. See CLAUDE.md.")
+        else:
+            print("  Plausible. This is the evidence the threshold has been")
+            print("  waiting for.")
+
+    return 0 if gap > 0 else 1
+
+
 def _report_anatomy(samples: list[dict]) -> None:
     """Is the body fully visible, or is the box cut off?
 
@@ -1764,6 +1879,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     fixture.add_argument("--min-wrist-confidence", type=float, default=0.5)
     fixture.set_defaults(func=_cmd_fixture)
+
+    threshold = sub.add_parser(
+        "reach-threshold", help="what the fixtures say the reach threshold should be"
+    )
+    threshold.add_argument(
+        "fixtures",
+        nargs="*",
+        default=["tests/fixtures/reach_poses.json", "tests/fixtures/walking_poses.json"],
+        help="fixture files to pool (default: both committed ones)",
+    )
+    threshold.add_argument(
+        "--threshold",
+        type=float,
+        default=2.5,
+        help="the value to score, for counting missed and false reaches",
+    )
+    threshold.set_defaults(func=_cmd_reach_threshold)
 
     sessions = sub.add_parser("sessions", help="list recorded sessions")
     sessions.add_argument("--db", default="out/patron.db", help="event store to read")

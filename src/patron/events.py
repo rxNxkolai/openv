@@ -56,6 +56,40 @@ SHOULDER_WIDTH_FLOOR = 0.20
 FRAME_EDGE_MARGIN_PX = 8
 
 
+def extension_ratio(
+    pose: Pose,
+    side: str,
+    wrist: tuple[float, float],
+    body_height: float,
+    min_confidence: float = 0.5,
+) -> float | None:
+    """How far the wrist is from its shoulder, in floored shoulder widths.
+
+    The number the reach gate compares against `min_arm_extension`, exposed so
+    that anything measuring this population reads exactly what the detector
+    reads. Two implementations of one measurement is how a threshold ends up
+    tuned against a number the detector never sees.
+
+    Returns None when there is no torso reference to measure against, which the
+    caller must treat as no evidence rather than as a low ratio.
+    """
+    left = pose.get("left_shoulder", min_confidence)
+    right = pose.get("right_shoulder", min_confidence)
+    if left is None or right is None:
+        return None
+
+    # Floored, because apparent shoulder width collapses under body rotation and
+    # an uncorrected ratio then passes anything. See SHOULDER_WIDTH_FLOOR.
+    shoulder_width = max(
+        math.dist(left, right), SHOULDER_WIDTH_FLOOR * max(body_height, 0.0)
+    )
+    if shoulder_width < 1e-6:
+        return None
+
+    shoulder = left if side == "left" else right
+    return math.dist(wrist, shoulder) / shoulder_width
+
+
 @dataclass(frozen=True)
 class ZoneSpan:
     """One continuous presence of one shopper's body point in one zone.
@@ -355,23 +389,12 @@ class ReachTracker:
         if self.min_arm_extension <= 0:
             return True
 
-        left = pose.get("left_shoulder", self.min_wrist_confidence)
-        right = pose.get("right_shoulder", self.min_wrist_confidence)
-        if left is None or right is None:
-            # No torso reference, so no way to judge. Do not silently drop a
-            # possible reach on missing evidence.
-            return True
-
-        # Floored, because apparent shoulder width collapses under body rotation
-        # and an uncorrected ratio then passes anything. See SHOULDER_WIDTH_FLOOR.
-        shoulder_width = max(
-            math.dist(left, right), SHOULDER_WIDTH_FLOOR * max(body_height, 0.0)
+        ratio = extension_ratio(
+            pose, side, wrist, body_height, self.min_wrist_confidence
         )
-        if shoulder_width < 1e-6:
-            return True
-
-        shoulder = left if side == "left" else right
-        return math.dist(wrist, shoulder) / shoulder_width >= self.min_arm_extension
+        # No torso reference, so no way to judge. Do not silently drop a possible
+        # reach on missing evidence.
+        return True if ratio is None else ratio >= self.min_arm_extension
 
     def flush(self) -> list[ZoneReach]:
         return self._machine.flush()

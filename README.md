@@ -401,6 +401,16 @@ analysis. If it reports the arm at around 0.44 of box height, the clip can
 settle the threshold. If it reports 0.52 or more, the body is still cut off and
 the footage tells us nothing new.
 
+Then ask what the pooled fixtures say the threshold should be:
+
+```bash
+uv run patron reach-threshold tests/fixtures/reach_poses.json tests/fixtures/reach_visible_poses.json
+```
+
+It reads the same `extension_ratio` the detector uses, so the number under
+discussion is the number that ships, and it reports the separation, the margin,
+the suggested threshold, and how many reaches the current default would miss.
+
 The prediction to falsify: a fully-visible reach should measure near **1.9**
 shoulder widths, not the 2.6 the current fixture shows. If it does, 2.5 is too
 high and reaches are being missed.
