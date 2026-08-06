@@ -376,8 +376,34 @@ is visible while reaching should measure about 1.9, and would be missed at 2.5.
 extending their arms constantly, top out at 2.16.
 
 So 2.5 is safe against false reaches and unproven against real ones. Closing
-this needs footage of a reach with the whole body in frame. The fixtures exist
-to make that a measurement rather than a guess.
+this needs footage of a reach with the whole body in frame.
+
+### Settling it
+
+Roughly two minutes of footage answers the question. **Stand fully in frame,
+feet visible, no trolley or counter cutting off your legs**, which is the whole
+point: the existing clip fails precisely because it does not.
+
+```bash
+uv run patron record --out data/reach-test.mp4 --seconds 120 --countdown 10
+uv run patron zones data/reach-test.mp4 --out data/reach-test.zones.json   # 's' for shelf
+uv run patron fixture data/reach-test.mp4 \
+  --zones data/reach-test.zones.json \
+  --out tests/fixtures/reach_visible_poses.json \
+  --reach 200-260 --reach 500-560 \
+  --not-reach 300-400 \
+  --note "whole body visible, deliberate reach into a shelf"
+```
+
+`patron fixture` captures the keypoints and runs the anatomy check on the spot,
+so you find out immediately whether the clip is usable rather than after
+analysis. If it reports the arm at around 0.44 of box height, the clip can
+settle the threshold. If it reports 0.52 or more, the body is still cut off and
+the footage tells us nothing new.
+
+The prediction to falsify: a fully-visible reach should measure near **1.9**
+shoulder widths, not the 2.6 the current fixture shows. If it does, 2.5 is too
+high and reaches are being missed.
 
 ### Useful flags
 

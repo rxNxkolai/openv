@@ -863,6 +863,194 @@ def _cmd_digest(args: argparse.Namespace) -> int:
     return 0 if digest.worth_sending else 2
 
 
+def _parse_ranges(values: list[str] | None) -> list[tuple[int, int]]:
+    """`100-200` or a bare `150`, into inclusive frame ranges."""
+    out = []
+    for raw in values or []:
+        text = raw.strip()
+        if "-" in text:
+            first, _, last = text.partition("-")
+            out.append((int(first), int(last)))
+        else:
+            out.append((int(text), int(text)))
+    return out
+
+
+def _cmd_fixture(args: argparse.Namespace) -> int:
+    """Turn labelled footage into a reach-detection fixture.
+
+    Capturing keypoints by hand is how the existing fixtures were made, and it
+    took a pile of throwaway scripts. That is fine once and a barrier every time
+    after, which is exactly how a detector ends up tuned by eye again.
+
+    It also runs the anatomy check while it has the data, because that is what
+    says whether a clip answers the open question. An arm longer than about 0.44
+    of box height means the body is cut off, usually by a trolley, and the
+    extension ratio computed from it is inflated.
+    """
+    import json
+
+    from patron.detectors.rfdetr_detector import RFDETRPersonDetector
+    from patron.pipeline import Pipeline
+    from patron.pose import PoseEstimator
+    from patron.sources import VideoSource
+    from patron.zones import ZoneSet
+
+    reach_ranges = _parse_ranges(args.reach)
+    not_reach_ranges = _parse_ranges(args.not_reach)
+    if not reach_ranges and not not_reach_ranges:
+        print(
+            "error: label at least one frame range with --reach or --not-reach.\n"
+            "       An unlabelled fixture cannot validate anything.",
+            file=sys.stderr,
+        )
+        return 1
+
+    def label_for(index: int):
+        for low, high in reach_ranges:
+            if low <= index <= high:
+                return True
+        for low, high in not_reach_ranges:
+            if low <= index <= high:
+                return False
+        return None
+
+    try:
+        zones = ZoneSet.load(args.zones)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    shelf = zones.shelf
+    if not len(shelf):
+        print(
+            f"error: {args.zones} has no zone of kind 'shelf'. Reaches are "
+            f"wrists inside a shelf zone, so there is nothing to capture.",
+            file=sys.stderr,
+        )
+        return 1
+
+    last_frame = max(
+        [high for _, high in reach_ranges + not_reach_ranges], default=0
+    )
+    samples = []
+
+    with VideoSource(args.source) as source:
+        info = source.info
+        pipeline = Pipeline(
+            RFDETRPersonDetector(
+                variant=args.variant, confidence=args.conf, device=None,
+                half=True, resolution=args.resolution,
+            ),
+            tracker="bytetrack",
+            pose=PoseEstimator(),
+        )
+        print(f"stream   {info.width}x{info.height} @ {info.fps:.1f}fps")
+        print(f"labels   {len(reach_ranges)} reach, {len(not_reach_ranges)} not-reach")
+
+        for result in pipeline.run(source, max_frames=last_frame + 1):
+            reach = label_for(result.frame_index)
+            if reach is None:
+                continue
+            for person in result.people:
+                pose = result.poses.get(person.track_id)
+                if pose is None:
+                    continue
+                for side in ("left", "right"):
+                    wrist = pose.get(f"{side}_wrist", args.min_wrist_confidence)
+                    if wrist is None or not shelf.containing(wrist):
+                        continue
+                    samples.append(
+                        {
+                            "frame": result.frame_index,
+                            "track_id": person.track_id,
+                            "zone": shelf.containing(wrist)[0],
+                            "side": side,
+                            "reach": reach,
+                            "note": args.note,
+                            "box": [
+                                person.box.x1, person.box.y1,
+                                person.box.x2, person.box.y2,
+                            ],
+                            "points": {k: list(v) for k, v in pose.points.items()},
+                        }
+                    )
+
+    if not samples:
+        print(
+            "\nno wrist entered a shelf zone in any labelled frame.\n"
+            "Either the ranges are wrong, or the shelf polygon does not cover "
+            "where the hand actually went.",
+            file=sys.stderr,
+        )
+        return 1
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(
+            {
+                "source": args.source,
+                "zones": args.zones,
+                "frame_size": [info.width, info.height],
+                "min_wrist_confidence": args.min_wrist_confidence,
+                "description": args.note,
+                "samples": samples,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    positives = sum(1 for s in samples if s["reach"])
+    print(f"\nwrote {out_path}")
+    print(f"  {len(samples)} samples, {positives} reach / {len(samples) - positives} not")
+    print(f"  {len({s['track_id'] for s in samples})} distinct bodies")
+
+    _report_anatomy(samples)
+    return 0
+
+
+def _report_anatomy(samples: list[dict]) -> None:
+    """Is the body fully visible, or is the box cut off?
+
+    The open question about the reach threshold. A real arm is about 0.44 of
+    standing height; anything much longer means the box stopped short of the
+    floor and every ratio derived from it is inflated.
+    """
+    import math
+
+    fractions = []
+    for sample in samples:
+        if not sample["reach"]:
+            continue
+        points = sample["points"]
+
+        def usable(name):
+            value = points.get(name)
+            return None if (value is None or value[2] < 0.5) else value[:2]
+
+        wrist = usable(f"{sample['side']}_wrist")
+        shoulder = usable(f"{sample['side']}_shoulder")
+        height = sample["box"][3] - sample["box"][1]
+        if wrist and shoulder and height > 0:
+            fractions.append(math.dist(wrist, shoulder) / height)
+
+    if not fractions:
+        return
+
+    lo, hi = min(fractions), max(fractions)
+    print(f"\nanatomy check: arm is {lo:.2f} to {hi:.2f} of box height "
+          f"(a real arm is about 0.44)")
+    if lo > 0.48:
+        print("  The body is cut off, most likely below the waist. Extension")
+        print("  ratios from this clip are inflated and cannot settle the")
+        print("  threshold question. Re-record with the whole body in frame.")
+    else:
+        print("  Plausible. This clip can speak to the threshold question,")
+        print("  which the existing fixture cannot. See CLAUDE.md.")
+
+
 def _cmd_sessions(args: argparse.Namespace) -> int:
     """List what has been recorded, so session ids stop being magic numbers."""
     from patron.store import EventStore
@@ -1545,6 +1733,37 @@ def main(argv: list[str] | None = None) -> int:
         help="print exactly what would be posted, and post nothing",
     )
     digest.set_defaults(func=_cmd_digest)
+
+    fixture = sub.add_parser(
+        "fixture", help="turn labelled footage into a reach-detection fixture"
+    )
+    fixture.add_argument("source", help="video file to capture keypoints from")
+    fixture.add_argument("--zones", required=True, help="zones.json with a shelf zone")
+    fixture.add_argument(
+        "--out", default="tests/fixtures/new_poses.json", help="where to write it"
+    )
+    fixture.add_argument(
+        "--reach",
+        action="append",
+        metavar="A-B",
+        help="frame range where a genuine reach happens, repeatable",
+    )
+    fixture.add_argument(
+        "--not-reach",
+        action="append",
+        metavar="A-B",
+        help="frame range where no reach happens, repeatable",
+    )
+    fixture.add_argument(
+        "--note", default="", help="what the shopper is doing, kept in the fixture"
+    )
+    fixture.add_argument("--conf", type=float, default=0.4)
+    fixture.add_argument("--resolution", type=int, default=896)
+    fixture.add_argument(
+        "--variant", default="medium", choices=["nano", "small", "medium", "large"]
+    )
+    fixture.add_argument("--min-wrist-confidence", type=float, default=0.5)
+    fixture.set_defaults(func=_cmd_fixture)
 
     sessions = sub.add_parser("sessions", help="list recorded sessions")
     sessions.add_argument("--db", default="out/patron.db", help="event store to read")
