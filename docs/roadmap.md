@@ -30,9 +30,13 @@ Three gates are open and none of them are code:
 1. **M4 has never run on a real fixed camera.** Everything else is downstream of
    believing this works in a store.
 2. **The agent path has never executed.** `patron advise` needs credentials.
-3. **Reach sensitivity rests on one reach episode by one shopper.** Specificity
-   is well evidenced across 16 bodies and two camera geometries; the positive
-   side is not.
+3. **Reach sensitivity is probably measuring an artifact.** Specificity is well
+   evidenced across 16 bodies and two camera geometries. The positive side is
+   one reach whose arm is anatomically too long for its box, almost certainly
+   because a trolley hides the shopper's legs and shortens the box. Two
+   occlusion-proof denominators were tried; both give believable numbers and no
+   discrimination. See CLAUDE.md. This needs footage of a reach with the whole
+   body in frame, and a test fails if such footage ever arrives.
 
 ---
 

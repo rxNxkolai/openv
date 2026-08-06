@@ -140,6 +140,27 @@ not generalise. Resolving this needs footage of a reach with the whole body
 visible. Do not retune on the evidence currently in the repo, and do not treat
 the current sensitivity as established.
 
+**Two occlusion-proof denominators were tried and both fail.** Recorded so nobody
+spends the afternoon rediscovering it:
+
+| denominator | reach | non-reach | separates |
+|---|---|---|---|
+| `0.20 * box height` (current) | 2.59-2.84 | 1.16-2.49 | yes, margin 0.09 |
+| `1.24 * upper arm` | 1.36-1.58 | 1.16-1.75 | no |
+| wrist-shoulder in upper arms | 1.69-1.96 | 1.69-2.17 | no |
+
+Upper arm is the obvious fix, being a rigid segment that occlusion cannot touch,
+and it produces anatomically believable numbers and no discrimination at all.
+The third row explains why the whole elbow-geometry family fails: **the trolley
+grip is straighter than the reach**, 2.17 against 1.96, because arms hang
+straight pushing a trolley and bend reaching into a shelf.
+
+So the current heuristic separates on the available data, and probably for a
+reason that will not hold. The alternatives that would hold do not separate.
+Both point the same way: arm extension alone is marginal, and the real fix is
+depth or geometry rather than a cleverer ratio, which is what "a flat shelf zone
+cannot tell a hand at the shelf from a hand in front of it" was always saying.
+
 Specificity is better evidenced. On `people-walking.mp4`, an overhead concourse
 where nobody reaches for anything, 29 shoppers crossed a shelf zone and produced
 0 reaches at 2.5, against 4 at the old 1.6 and 43 with the gate off. Pooling both
