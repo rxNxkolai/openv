@@ -168,6 +168,43 @@ def test_bodies_running_off_the_frame_are_skipped():
 # Where the threshold actually sits
 # --------------------------------------------------------------------------
 
+def test_the_validated_reach_is_anatomically_implausible():
+    """A standing warning, not a passing grade.
+
+    A real arm is about 0.44 of standing height and shoulder breadth about 0.23.
+    The one reach this threshold was tuned on measures well outside both, which
+    is what a lower body hidden behind a trolley does: the box stops short of
+    the floor, standing height is underestimated, and the floored denominator
+    inflates the ratio.
+
+    This test exists so the fact cannot quietly stop being true, in either
+    direction. If footage arrives where a reach measures anatomically, this
+    fails and the threshold should be revisited with it.
+    """
+    data = load("reach_poses")
+    arm_fractions = []
+
+    for sample in data["samples"]:
+        if not sample["reach"]:
+            continue
+        def point(name):
+            v = sample["points"].get(name)
+            return None if (v is None or v[2] < 0.5) else (v[0], v[1])
+
+        wrist = point(f"{sample['side']}_wrist")
+        shoulder = point(f"{sample['side']}_shoulder")
+        height = sample["box"][3] - sample["box"][1]
+        if wrist and shoulder and height > 0:
+            arm_fractions.append(math.dist(wrist, shoulder) / height)
+
+    assert arm_fractions
+    # Anatomy says about 0.44. Everything here is longer, so the box is short.
+    assert min(arm_fractions) > 0.48, (
+        "a reach now measures anatomically: revisit the 2.5 threshold, which "
+        "was tuned when they did not"
+    )
+
+
 def test_the_threshold_sits_in_a_real_gap_across_both_clips():
     """A threshold flush against the data would be luck, not tuning.
 

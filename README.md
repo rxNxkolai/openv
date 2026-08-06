@@ -359,11 +359,25 @@ against the data.
 rather than hand-built poses. Reintroducing any one of the three fixes
 misclassifies between 1 and 55 recorded samples.
 
-Sensitivity still rests on a single reach episode by a single shopper, so treat
-2.5 as provisional in that direction. Specificity is on firmer ground: 15
-distinct bodies across two camera geometries. More footage of people actually
-reaching should retune it, and the fixtures are there to make that a measurement
-rather than a guess.
+Specificity is on firm ground: 15 distinct bodies across two camera geometries,
+zero false positives.
+
+**Sensitivity is not, and the likely error is missed reaches.** The one
+validated reach is anatomically implausible. Its arm measures 0.52 to 0.57 of
+box height where a real arm is about 0.44, and apparent shoulder width is 0.08
+to 0.16 where anatomy says about 0.23. The probable cause is that the shopper's
+lower body is hidden behind their trolley, so the box stops short of the floor,
+standing height is underestimated, and the floored denominator inflates the
+ratio.
+
+That is the ordinary retail case, not an edge case. A shopper whose whole body
+is visible while reaching should measure about 1.9, and would be missed at 2.5.
+886 wrist measurements across two basketball players, fully visible and
+extending their arms constantly, top out at 2.16.
+
+So 2.5 is safe against false reaches and unproven against real ones. Closing
+this needs footage of a reach with the whole body in frame. The fixtures exist
+to make that a measurement rather than a guess.
 
 ### Useful flags
 

@@ -118,6 +118,28 @@ Verified on `grocery-store.mp4`: 7 reaches before, 1 after, and the survivor is 
 genuine reach into a shelf. That closes true-positive validation. It rests on one
 reach episode by one shopper, so 2.5 is provisional on the sensitivity side.
 
+**The threshold is probably calibrated on an artifact, and the likely error is
+missed reaches.** The one validated reach is anatomically implausible: the arm
+measures 0.52 to 0.57 of box height where a real arm is about 0.44, and apparent
+shoulder width is 0.08 to 0.16 where anatomy says about 0.23. The mechanism is
+almost certainly that the shopper's lower body is occluded by their trolley, so
+the box stops short of the floor, standing height is underestimated, the floored
+denominator is too small and the ratio inflates.
+
+That is the normal retail case, not an edge case: trolleys, baskets and low
+shelving occlude shoppers below the waist constantly. A shopper whose whole body
+is visible while genuinely reaching should measure about 1.9 by anatomy
+(arm 0.44 of height over shoulders 0.23), and would be **missed** at 2.5.
+
+Corroborating: 886 wrist measurements across two basketball players, who extend
+their arms constantly and are fully visible, top out at 2.16. Nothing reaches
+2.5.
+
+So the earlier claim that 2.5 "sits in a gap" holds for those two clips and does
+not generalise. Resolving this needs footage of a reach with the whole body
+visible. Do not retune on the evidence currently in the repo, and do not treat
+the current sensitivity as established.
+
 Specificity is better evidenced. On `people-walking.mp4`, an overhead concourse
 where nobody reaches for anything, 29 shoppers crossed a shelf zone and produced
 0 reaches at 2.5, against 4 at the old 1.6 and 43 with the gate off. Pooling both
