@@ -1,9 +1,15 @@
 """The privacy posture, enforced rather than described.
 
 CLAUDE.md constraint 2 is what keeps this product out of BIPA and EU AI Act
-exposure, and Target and Home Depot are in active litigation over exactly this
-category. Right now that posture is honoured by construction: the code happens
-not to store faces because nobody wrote code that stores faces.
+exposure. Note the precise version, because the imprecise one is a liability in a
+deposition: *Arnold v. Target* and *Jankowski v. Home Depot* are facial-recognition
+loss-prevention cases, not behaviour analytics. They are the category we avoid.
+What they establish is that plaintiffs plead on information and belief and survive
+dismissal anyway, and that vendors are named directly. So these tests are not only
+a design guardrail, they are the evidence that answers the complaint early.
+
+Right now that posture is honoured by construction: the code happens not to store
+faces because nobody wrote code that stores faces.
 
 That is not the same as a guarantee. Someone adds frame dumping to debug a
 tracker, or a face landmark to improve pose, and nothing anywhere objects. These
@@ -13,7 +19,7 @@ They are deliberately about structure rather than behaviour. A behavioural test
 can only show that the posture held for the inputs it tried.
 
 **Verifying these have teeth.** Copying the tree, introducing a violation and
-re-running does not work for the checks that import patron: the package is
+re-running does not work for the checks that import openv: the package is
 installed editable, so an import inside the copy still resolves to the original
 source and the test passes against unmodified code. Those have to be checked in
 process by patching the module attribute. The file-scanning checks read via
@@ -27,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "patron"
+SRC = Path(__file__).resolve().parents[1] / "src" / "openv"
 
 
 def sources() -> dict[str, str]:
@@ -48,11 +54,35 @@ def test_pose_collects_no_face_landmark():
     single line that must not be crossed. Patron needs to know whether a hand
     went toward a shelf and nothing else about the body.
     """
-    from patron.pose import JOINTS
+    from openv.pose import JOINTS
 
     assert JOINTS, "the joint list vanished, which is not a pass"
     for name, index in JOINTS.items():
         assert index >= 11, f"{name} is a face landmark (index {index})"
+
+
+def test_pose_landmarks_are_only_ever_read_through_the_joint_map():
+    """`JOINTS` is the gate, so nothing may reach around it.
+
+    `test_pose_collects_no_face_landmark` proves the map holds no face index.
+    That is worth nothing if some other line does `landmarks[3]` directly, so
+    this is the check that makes the first one load-bearing.
+
+    The claim this defends is narrower than "we never compute anything facial",
+    and the narrow one is the true one. MediaPipe computes all 33 landmarks
+    including the face; what Patron can prove is that **no facial landmark value
+    is ever read out of the model**. That is exactly this test.
+    """
+    text = (SRC / "pose.py").read_text(encoding="utf-8")
+
+    subscripts = re.findall(r"\blandmarks\s*\[([^\]]+)\]", text)
+    assert subscripts, "pose.py stopped indexing landmarks, so this check went blind"
+
+    for expression in subscripts:
+        assert expression.strip() == "index", (
+            f"pose.py reads landmarks[{expression.strip()}] directly. Every landmark "
+            f"must come from the JOINTS mapping so the face indices stay unreachable."
+        )
 
 
 def test_no_module_mentions_face_or_embedding_machinery():
@@ -104,7 +134,7 @@ def test_only_explicitly_requested_code_writes_pixels():
 
 
 def test_the_event_store_has_no_column_that_could_hold_an_image():
-    from patron.store import SCHEMA
+    from openv.store import SCHEMA
 
     lowered = SCHEMA.lower()
     for forbidden in (" blob", "image", "frame_data", "thumbnail", "embedding", "jpeg"):
@@ -113,7 +143,7 @@ def test_the_event_store_has_no_column_that_could_hold_an_image():
 
 def test_the_live_engine_keeps_one_frame_not_a_history():
     """A buffer is a buffer. A list of buffers is a recording."""
-    from patron.web.engine import LiveEngine
+    from openv.web.engine import LiveEngine
 
     text = Path(LiveEngine.__module__.replace(".", "/") + ".py")
     source = (SRC.parent.parent / "src" / text).read_text(encoding="utf-8")
@@ -129,7 +159,7 @@ def test_the_live_engine_keeps_one_frame_not_a_history():
 # --------------------------------------------------------------------------
 
 def test_no_table_links_a_person_across_sessions():
-    from patron.store import SCHEMA
+    from openv.store import SCHEMA
 
     lowered = SCHEMA.lower()
     for forbidden in ("person", "identity", "visitor", "customer_id", "shopper_id"):
@@ -145,8 +175,8 @@ def test_every_track_id_is_qualified_by_a_session(tmp_path):
     Nothing may join them, and the schema should make joining them wrong rather
     than merely discouraged.
     """
-    from patron.events import ZoneVisit
-    from patron.store import EventStore
+    from openv.events import ZoneVisit
+    from openv.store import EventStore
 
     def visit(track_id):
         return ZoneVisit(
@@ -168,8 +198,8 @@ def test_every_track_id_is_qualified_by_a_session(tmp_path):
 
 
 def test_positions_are_scoped_the_same_way(tmp_path):
-    from patron.floor import FloorPosition
-    from patron.store import EventStore
+    from openv.floor import FloorPosition
+    from openv.store import EventStore
 
     with EventStore(tmp_path / "e.db") as store:
         first = store.start_session("a.mp4", fps=30.0, width=100, height=100)

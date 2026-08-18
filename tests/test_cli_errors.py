@@ -13,8 +13,8 @@ import json
 
 import pytest
 
-from patron.cli import main
-from patron.store import EventStore
+from openv.cli import main
+from openv.store import EventStore
 
 LIGHT_COMMANDS = [
     ["analyze"],
@@ -63,7 +63,7 @@ def test_measure_on_a_zone_that_was_never_seen(tmp_path, capsys):
     assert code == 1
     assert "reach data in 0 sessions" in error
     # Points at the command that would show what does exist.
-    assert "patron sessions" in error
+    assert "openv sessions" in error
 
 
 def test_threads_on_a_thread_that_does_not_exist(tmp_path, capsys):
@@ -102,7 +102,7 @@ def test_a_malformed_zones_file_names_the_file_and_the_line(tmp_path):
     What actually happened is that somebody hand-edited a zones file and
     dropped a comma, and the message should say so.
     """
-    from patron.zones import ZoneSet
+    from openv.zones import ZoneSet
 
     path = tmp_path / "bad.zones.json"
     path.write_text('{\n  "zones": [\n', encoding="utf-8")
@@ -115,7 +115,7 @@ def test_a_malformed_zones_file_names_the_file_and_the_line(tmp_path):
 
 
 def test_a_zones_file_missing_its_polygon_key(tmp_path):
-    from patron.zones import ZoneSet
+    from openv.zones import ZoneSet
 
     path = tmp_path / "bad.zones.json"
     path.write_text(json.dumps({"zones": [{"name": "a"}]}), encoding="utf-8")
@@ -127,7 +127,7 @@ def test_a_zones_file_missing_its_polygon_key(tmp_path):
 
 
 def test_a_zones_file_with_no_zones_key(tmp_path):
-    from patron.zones import ZoneSet
+    from openv.zones import ZoneSet
 
     path = tmp_path / "empty.zones.json"
     path.write_text(json.dumps({"areas": []}), encoding="utf-8")
@@ -137,7 +137,7 @@ def test_a_zones_file_with_no_zones_key(tmp_path):
 
 
 def test_a_two_point_polygon_names_its_file(tmp_path):
-    from patron.zones import ZoneSet
+    from openv.zones import ZoneSet
 
     path = tmp_path / "thin.zones.json"
     path.write_text(
@@ -152,7 +152,7 @@ def test_a_two_point_polygon_names_its_file(tmp_path):
 
 
 def test_a_malformed_floor_file_names_the_file(tmp_path):
-    from patron.floor import FloorMap
+    from openv.floor import FloorMap
 
     path = tmp_path / "bad.floor.json"
     path.write_text("not json", encoding="utf-8")
@@ -164,7 +164,7 @@ def test_a_malformed_floor_file_names_the_file(tmp_path):
 
 
 def test_a_floor_file_with_a_malformed_correspondence(tmp_path):
-    from patron.floor import FloorMap
+    from openv.floor import FloorMap
 
     path = tmp_path / "bad.floor.json"
     path.write_text(
@@ -176,7 +176,7 @@ def test_a_floor_file_with_a_malformed_correspondence(tmp_path):
 
 
 def test_a_floor_file_with_too_few_points_is_refused_on_load(tmp_path):
-    from patron.floor import FloorMap
+    from openv.floor import FloorMap
 
     path = tmp_path / "bad.floor.json"
     path.write_text(
@@ -200,7 +200,7 @@ def test_a_floor_file_with_too_few_points_is_refused_on_load(tmp_path):
 
 
 def test_a_floor_file_with_degenerate_points_is_refused_on_load(tmp_path):
-    from patron.floor import FloorMap
+    from openv.floor import FloorMap
 
     path = tmp_path / "flat.floor.json"
     path.write_text(

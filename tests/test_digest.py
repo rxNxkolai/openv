@@ -9,9 +9,9 @@ import json
 
 import pytest
 
-from patron.digest import build_digest
-from patron.events import ZoneVisit
-from patron.store import EventStore
+from openv.digest import build_digest
+from openv.events import ZoneVisit
+from openv.store import EventStore
 
 
 def span(i, zone, a, b):

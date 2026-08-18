@@ -1,6 +1,6 @@
 """Geometry that the whole spatial layer depends on."""
 
-from patron.types import Box, FrameResult, TrackedPerson
+from openv.types import Box, FrameResult, TrackedPerson
 
 
 def test_foot_point_is_bottom_center_not_box_center():

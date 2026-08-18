@@ -7,7 +7,7 @@ inverted axis would look plausible while being wrong.
 
 import numpy as np
 
-from patron.floorview import FloorView
+from openv.floorview import FloorView
 
 VIEW = FloorView(extent=(0.0, 0.0, 10.0, 8.0), pixels_per_unit=20.0)
 

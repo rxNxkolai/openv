@@ -18,7 +18,7 @@ writes an answer would spend money indefinitely, so the cycle is bounded and
 says so when it runs out rather than returning a half-answer as if it were whole.
 
 The deterministic layer stays the floor. If there are no credentials this raises,
-and `patron analyze` is unaffected, because it needs no model at all.
+and `openv analyze` is unaffected, because it needs no model at all.
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from patron.store import EventStore
-from patron.tools import TOOL_SPECS, call
+from openv.store import EventStore
+from openv.tools import TOOL_SPECS, call
 
 MODEL = "claude-opus-5"
 

@@ -8,7 +8,7 @@ differently depending on the camera.
 
 import pytest
 
-from patron.tracking import ALGORITHMS, PersonTracker
+from openv.tracking import ALGORITHMS, PersonTracker
 
 
 @pytest.mark.parametrize("fps", [7.5, 15.0, 30.0, 60.0])

@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from patron.analysis import Finding, StoreAnalysis
+from openv.analysis import Finding, StoreAnalysis
 
 MODEL = "claude-opus-5"
 

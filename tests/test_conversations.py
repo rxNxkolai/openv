@@ -10,7 +10,7 @@ import json
 
 from test_chat import FakeClient, build, text, uses
 
-from patron.chat import ChatSession
+from openv.chat import ChatSession
 
 
 def test_a_thread_records_both_sides(tmp_path):

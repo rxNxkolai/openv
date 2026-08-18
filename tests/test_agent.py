@@ -9,16 +9,16 @@ import json
 
 import pytest
 
-from patron.agent import (
+from openv.agent import (
     SCHEMA,
     SYSTEM,
     AdvisorUnavailable,
     build_prompt,
     parse_recommendations,
 )
-from patron.analysis import analyze
-from patron.events import ZoneSpan
-from patron.store import EventStore
+from openv.analysis import analyze
+from openv.events import ZoneSpan
+from openv.store import EventStore
 
 
 def span(track_id, zone, start, end):
@@ -136,7 +136,7 @@ def test_missing_credentials_surface_as_advisor_unavailable(analysis, monkeypatc
     """
     import anthropic
 
-    from patron import agent
+    from openv import agent
 
     class _NoCreds:
         def __init__(self, *a, **kw):
@@ -155,8 +155,8 @@ def test_missing_credentials_surface_as_advisor_unavailable(analysis, monkeypatc
 def test_no_findings_means_no_api_call(analysis, monkeypatch):
     import anthropic
 
-    from patron import agent
-    from patron.analysis import StoreAnalysis
+    from openv import agent
+    from openv.analysis import StoreAnalysis
 
     def _explode(*a, **kw):
         raise AssertionError("should not have contacted the API")

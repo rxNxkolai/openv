@@ -22,7 +22,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from patron.floor import FloorMap
+from openv.floor import FloorMap
 
 _BACKGROUND = (24, 24, 28)
 _GRID = (44, 44, 52)

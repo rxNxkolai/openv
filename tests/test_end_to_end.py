@@ -19,13 +19,13 @@ import json
 
 import pytest
 
-from patron.deliver import build_payload
-from patron.digest import build_digest
-from patron.events import ReachTracker, VisitTracker
-from patron.floor import FloorMap, PositionRecorder
-from patron.store import EventStore
-from patron.types import Box, FrameResult, Pose, TrackedPerson
-from patron.zones import Zone, ZoneSet
+from openv.deliver import build_payload
+from openv.digest import build_digest
+from openv.events import ReachTracker, VisitTracker
+from openv.floor import FloorMap, PositionRecorder
+from openv.store import EventStore
+from openv.types import Box, FrameResult, Pose, TrackedPerson
+from openv.zones import Zone, ZoneSet
 
 FPS = 10.0
 
@@ -146,7 +146,7 @@ def test_only_the_reachers_reached(populated):
 
 
 def test_the_funnel_arrives_intact_at_the_analysis_layer(populated):
-    from patron.analysis import analyze
+    from openv.analysis import analyze
 
     store, session = populated
     [finding] = [f for f in analyze(store, session).findings if f.zone == "shelf"]
@@ -197,7 +197,7 @@ def test_a_broken_shelf_travels_all_the_way_to_the_payload(tmp_path):
 
 
 def test_a_change_between_two_runs_is_measured_across_the_whole_chain(tmp_path):
-    from patron.analysis import measure_change
+    from openv.analysis import measure_change
 
     with EventStore(tmp_path / "change.db") as store:
         before = store.start_session("week1", fps=FPS, width=500, height=400)
@@ -219,7 +219,7 @@ def test_the_tool_layer_sees_the_same_numbers_as_the_report(populated):
     ever diverge, one of them is lying to somebody who is about to make a
     decision.
     """
-    from patron.tools import call
+    from openv.tools import call
 
     store, session = populated
     funnel = call("get_funnel", store, session_id=session, zone="shelf")["funnel"]

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from patron.cli import main
+from openv.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -25,14 +25,14 @@ FENCE = re.compile(r"```bash\n(.*?)```", re.DOTALL)
 
 
 def documented_invocations() -> list[tuple[str, list[str]]]:
-    """Every `patron <command> ... --flag` written in a bash block."""
+    """Every `openv <command> ... --flag` written in a bash block."""
     found = []
     for block in FENCE.findall(README):
         # Join continuation lines so a wrapped command is read as one.
         joined = block.replace("\\\n", " ")
         for line in joined.splitlines():
             line = line.strip()
-            if not line.startswith("uv run patron "):
+            if not line.startswith("uv run openv "):
                 continue
             parts = line.split()
             command = parts[3] if len(parts) > 3 else None
@@ -53,7 +53,7 @@ def help_text(command: str, capsys) -> str:
     with pytest.raises(SystemExit) as exit_info:
         main([command, "--help"])
     if exit_info.value.code not in (0, None):
-        raise LookupError(f"patron has no command {command!r}")
+        raise LookupError(f"openv has no command {command!r}")
     return capsys.readouterr().out
 
 

@@ -10,8 +10,8 @@ import cv2
 import numpy as np
 import supervision as sv
 
-from patron.types import FrameResult
-from patron.zones import ZoneSet
+from openv.types import FrameResult
+from openv.zones import ZoneSet
 
 # Distinct, readable on both dark and bright shelving.
 _ZONE_COLORS = [

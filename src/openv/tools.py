@@ -35,15 +35,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from patron.analysis import (
+from openv.analysis import (
     MIN_SHOPPERS_FOR_CONFIDENCE,
     Finding,
     StoreAnalysis,
     ZoneFunnel,
     analyze,
 )
-from patron.analysis import measure_change as _measure_change
-from patron.store import EventStore
+from openv.analysis import measure_change as _measure_change
+from openv.store import EventStore
 
 
 @dataclass(frozen=True)

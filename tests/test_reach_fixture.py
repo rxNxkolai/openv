@@ -25,9 +25,9 @@ from pathlib import Path
 
 import pytest
 
-from patron.events import SHOULDER_WIDTH_FLOOR, ReachTracker
-from patron.types import Box, Pose
-from patron.zones import Zone, ZoneSet
+from openv.events import SHOULDER_WIDTH_FLOOR, ReachTracker
+from openv.types import Box, Pose
+from openv.zones import Zone, ZoneSet
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -211,7 +211,7 @@ def test_the_threshold_sits_in_a_real_gap_across_both_clips():
     Pooling both fixtures: every non-reach must fall below the default and the
     genuine reach must clear it, with daylight on both sides.
     """
-    from patron.events import DEFAULT_MIN_ARM_EXTENSION
+    from openv.events import DEFAULT_MIN_ARM_EXTENSION
 
     positives, negatives = [], []
     for fixture in ("reach_poses", "walking_poses"):

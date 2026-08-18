@@ -10,7 +10,7 @@ import json
 import numpy as np
 import pytest
 
-from patron.floor import FloorMap
+from openv.floor import FloorMap
 
 # A camera looking along an aisle. The last row is what makes it a perspective
 # transform rather than an affine one: w shrinks as y grows, so equal pixel
@@ -75,6 +75,43 @@ def test_four_points_cannot_verify_themselves():
     assert wrong.reprojection_error is None
     assert honest.is_verifiable is False
     assert wrong.is_verifiable is False
+
+
+def test_an_ordinary_oblique_quad_projects_its_own_calibration_points():
+    """A calibration must never refuse the points it was built from.
+
+    A homography is determined only up to scale, and that scale includes sign:
+    -H and H are the same projective map. `project` reads the sign of w as "in
+    front of the camera or beyond the horizon", so on the wrong sign the test
+    inverts and every real floor point is refused. The symptom is an empty
+    positions table and no error anywhere.
+
+    Nothing exotic triggers it. This is a plain trapezoid, wider at the bottom
+    of the image than the top, which is what every forward-looking camera sees,
+    and cv2.findHomography returns the negative scale for it.
+    """
+    trapezoid = [(420.0, 1040.0), (1500.0, 1040.0), (1180.0, 470.0), (740.0, 470.0)]
+    plan = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+    floor = FloorMap(tuple(zip(trapezoid, plan)), units="m")
+
+    for image_point, floor_point in zip(trapezoid, plan):
+        assert floor.project(image_point) == pytest.approx(floor_point, abs=1e-9)
+
+    # And a shopper standing anywhere inside the calibrated patch.
+    assert floor.project((960.0, 900.0)) is not None
+
+
+def test_the_horizon_guard_survives_the_sign_normalisation():
+    """Fixing the sign must not cost the guard it exists to protect.
+
+    Points beyond the horizon still have to come back as None rather than as a
+    plausible position on the wrong side of the camera.
+    """
+    floor = FloorMap(EXACT)
+
+    assert floor.project((500.0, 1900.0)) is not None  # ground plane
+    assert floor.project((500.0, 2000.0)) is None  # exactly the horizon
+    assert floor.project((500.0, 2600.0)) is None  # beyond it
 
 
 def test_a_fifth_point_is_what_makes_a_bad_click_visible():
@@ -179,7 +216,7 @@ def test_saved_calibration_keeps_the_points_not_just_the_matrix(tmp_path):
 
 
 def test_people_are_projected_from_their_feet_not_their_centre():
-    from patron.types import Box, FrameResult, TrackedPerson
+    from openv.types import Box, FrameResult, TrackedPerson
 
     floor = FloorMap(EXACT)
     box = Box(x1=460.0, y1=300.0, x2=540.0, y2=500.0)
@@ -197,7 +234,7 @@ def test_people_are_projected_from_their_feet_not_their_centre():
 
 
 def test_a_shopper_above_the_horizon_is_omitted_not_guessed():
-    from patron.types import Box, FrameResult, TrackedPerson
+    from openv.types import Box, FrameResult, TrackedPerson
 
     floor = FloorMap(EXACT)
     grounded = TrackedPerson(
@@ -218,7 +255,7 @@ def test_a_shopper_above_the_horizon_is_omitted_not_guessed():
 
 
 def _walker(track_id, x, frame, t_s):
-    from patron.types import Box, FrameResult, TrackedPerson
+    from openv.types import Box, FrameResult, TrackedPerson
 
     return FrameResult(
         frame_index=frame,
@@ -234,7 +271,7 @@ def _walker(track_id, x, frame, t_s):
 
 
 def test_positions_are_sampled_not_recorded_every_frame():
-    from patron.floor import PositionRecorder
+    from openv.floor import PositionRecorder
 
     recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=1.0)
 
@@ -255,7 +292,7 @@ def test_the_interval_is_per_track_not_global():
     A single global clock would make them wait for a tick shared with everyone
     already in frame, so their path would start late by up to the interval.
     """
-    from patron.floor import PositionRecorder
+    from openv.floor import PositionRecorder
 
     recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=1.0)
 
@@ -266,7 +303,7 @@ def test_the_interval_is_per_track_not_global():
 
 
 def test_a_position_carries_where_and_when():
-    from patron.floor import PositionRecorder
+    from openv.floor import PositionRecorder
 
     recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=0.0)
 
@@ -279,7 +316,7 @@ def test_a_position_carries_where_and_when():
 
 
 def test_forgetting_a_track_clears_its_sampling_state():
-    from patron.floor import PositionRecorder
+    from openv.floor import PositionRecorder
 
     recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=10.0)
 
@@ -293,13 +330,13 @@ def test_forgetting_a_track_clears_its_sampling_state():
 
 
 def test_a_shopper_above_the_horizon_records_no_position():
-    from patron.floor import PositionRecorder
+    from openv.floor import PositionRecorder
 
     recorder = PositionRecorder(FloorMap(EXACT), min_interval_s=0.0)
 
     assert recorder.update(_walker(1, 500.0, 0, 0.0)) != []
     # Box bottom at y=2600 is past the horizon at y=2000.
-    from patron.types import Box, FrameResult, TrackedPerson
+    from openv.types import Box, FrameResult, TrackedPerson
 
     impossible = FrameResult(
         frame_index=1,

@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from patron.types import WRISTS, Pose, TrackedPerson
+from openv.types import WRISTS, Pose, TrackedPerson
 
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"

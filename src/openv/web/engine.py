@@ -8,7 +8,7 @@ rate, and stops N open tabs from becoming N inference loops.
 
 Everything the engine measures goes to the same event store the offline pipeline
 writes, so a live session is analysable afterwards with exactly the same
-`patron analyze`. A console that only kept numbers in memory would be a demo, not
+`openv analyze`. A console that only kept numbers in memory would be a demo, not
 an instrument.
 
 The source may be a camera or a video file. File replay is paced to the source
@@ -30,17 +30,17 @@ from typing import Any
 import cv2
 import numpy as np
 
-from patron.events import (
+from openv.events import (
     DEFAULT_MIN_ARM_EXTENSION,
     ReachTracker,
     VisitTracker,
     ZoneSpan,
 )
-from patron.render import Renderer
-from patron.sources import VideoSource
-from patron.tracking import PersonTracker
-from patron.types import FrameResult
-from patron.zones import FLOOR_KIND, Zone, ZoneSet
+from openv.render import Renderer
+from openv.sources import VideoSource
+from openv.tracking import PersonTracker
+from openv.types import FrameResult
+from openv.zones import FLOOR_KIND, Zone, ZoneSet
 
 # The findings query is cheap, but recomputing it per frame would still be waste.
 FINDINGS_INTERVAL_S = 3.0
@@ -95,7 +95,7 @@ class LiveEngine:
         self._floor_trails: dict[int, list[tuple[float, float]]] = {}
         self._floor_seen: dict[int, float] = {}
         if floor_path is not None:
-            from patron.floor import FloorMap, PositionRecorder
+            from openv.floor import FloorMap, PositionRecorder
 
             self._floor_map = FloorMap.load(floor_path)
             self._floor_recorder = PositionRecorder(
@@ -144,7 +144,7 @@ class LiveEngine:
     # ---------------- lifecycle ----------------
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name="patron-live", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="openv-live", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -247,7 +247,7 @@ class LiveEngine:
         fps = source.info.fps
 
         try:
-            from patron.detectors import RFDETRPersonDetector
+            from openv.detectors import RFDETRPersonDetector
 
             detector = RFDETRPersonDetector(
                 variant=self._variant,
@@ -257,7 +257,7 @@ class LiveEngine:
             )
             pose_estimator = None
             if self.pose_enabled:
-                from patron.pose import PoseEstimator
+                from openv.pose import PoseEstimator
 
                 pose_estimator = PoseEstimator()
         except Exception as exc:  # noqa: BLE001 - surfaced to the browser
@@ -268,11 +268,17 @@ class LiveEngine:
 
         store = None
         if self.db_path is not None:
-            from patron.store import EventStore
+            from openv.store import EventStore
 
             store = EventStore(self.db_path)
             session_id = store.start_session(
-                source=self.source_spec, fps=fps, width=self.width, height=self.height
+                source=self.source_spec,
+                fps=fps,
+                width=self.width,
+                height=self.height,
+                calibration=(
+                    self._floor_map.as_dict() if self._floor_map is not None else None
+                ),
             )
             with self._lock:
                 self._session_id = session_id
@@ -357,7 +363,7 @@ class LiveEngine:
             self._reaches = None
 
     def _refresh_findings(self, store) -> None:
-        from patron.analysis import analyze
+        from openv.analysis import analyze
 
         with self._lock:
             session_id = self._session_id

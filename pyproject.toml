@@ -1,5 +1,5 @@
 [project]
-name = "patron"
+name = "openv"
 version = "0.1.0"
 description = "Agentic shopper-behavior intelligence on existing store cameras"
 requires-python = ">=3.11,<3.13"
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-patron = "patron.cli:main"
+openv = "openv.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -28,7 +28,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/patron"]
+packages = ["src/openv"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }

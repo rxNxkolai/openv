@@ -11,7 +11,7 @@ import argparse
 
 import pytest
 
-from patron.cli import _inert_flag_warnings
+from openv.cli import _inert_flag_warnings
 
 
 def args(**overrides):
@@ -27,7 +27,7 @@ def args(**overrides):
         enter_seconds=0.2,
         exit_seconds=0.5,
         lost_seconds=1.5,
-        db="out/patron.db",
+        db="out/openv.db",
     )
     base.update(overrides)
     return argparse.Namespace(**base)

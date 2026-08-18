@@ -11,10 +11,10 @@ So the answer is a verdict, and "indistinguishable" is a real one.
 
 import pytest
 
-from patron.analysis import MIN_SHOPPERS_FOR_CONFIDENCE, measure_change
-from patron.events import ZoneVisit
-from patron.store import EventStore
-from patron.tools import call
+from openv.analysis import MIN_SHOPPERS_FOR_CONFIDENCE, measure_change
+from openv.events import ZoneVisit
+from openv.store import EventStore
+from openv.tools import call
 
 
 def span(track_id, zone, a, b):

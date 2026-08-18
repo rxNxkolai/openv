@@ -41,3 +41,13 @@ Thumbs.db
 # zero-byte files named after fragments of the expression.
 *[<>]*
 maximum_frames_without_update
+
+# Internal venture material: strategy, naming/trademark research, brand system,
+# and the marketing site. Deliberately excluded from the open-source release.
+docs/venture-research-*.md
+docs/branding-naming.md
+docs/loop-findings.md
+docs/brand/
+site/
+src/openv/web/static/brand.css
+src/openv/web/static/fonts/

@@ -18,7 +18,7 @@ import numpy as np
 import supervision as sv
 from trackers import BoTSORTTracker, ByteTrackTracker, OCSORTTracker, SORTTracker
 
-from patron.types import Box, TrackedPerson
+from openv.types import Box, TrackedPerson
 
 ALGORITHMS = {
     "bytetrack": ByteTrackTracker,

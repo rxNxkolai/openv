@@ -1,4 +1,4 @@
-# Patron roadmap
+# OpenV roadmap
 
 What is built, what is next, and why in that order.
 
@@ -29,7 +29,7 @@ Three gates are open and none of them are code:
 
 1. **M4 has never run on a real fixed camera.** Everything else is downstream of
    believing this works in a store.
-2. **The agent path has never executed.** `patron advise` needs credentials.
+2. **The agent path has never executed.** `openv advise` needs credentials.
 3. **Reach sensitivity is probably measuring an artifact.** Specificity is well
    evidenced across 16 bodies and two camera geometries. The positive side is
    one reach whose arm is anatomically too long for its box, almost certainly
@@ -90,7 +90,7 @@ approval is the liability gate.
 
 Camera in, overlay and running numbers in the browser, writing to the same event
 store the offline pipeline uses, so a live session is analysable afterwards with
-the same `patron analyze`. Accepts a video file as source, which is what makes
+the same `openv analyze`. Accepts a video file as source, which is what makes
 the whole path demoable with no camera present.
 
 ---
@@ -105,11 +105,11 @@ space.
 
 - `floor.py` maps pixels to floor coordinates through one homography, because
   the floor is a plane and stores already have floor plans.
-- `patron floorplan` calibrates by clicking, reads `UNVERIFIABLE` at four points
+- `openv floorplan` calibrates by clicking, reads `UNVERIFIABLE` at four points
   rather than a reassuring zero, and warps the floor flat as the manual check.
 - Positions persist to the event store, sampled at 1Hz per shopper, so paths and
   speed survive the session and can be asked about later.
-- `patron live --floor` puts the plan view in the browser and records to the
+- `openv live --floor` puts the plan view in the browser and records to the
   same store the offline path uses.
 
 **Remaining:**
@@ -136,14 +136,14 @@ path across the seam, with no appearance model involved.
 can act on, with every number traceable to the code that computed it.
 
 This is the product surface where the value actually lands. It is also the
-easiest place to destroy the thing that makes Patron defensible, so the
+easiest place to destroy the thing that makes OpenV defensible, so the
 architecture matters more here than anywhere else.
 
 ### The rule that carries over
 
 **The agent never computes and never executes.** A model doing arithmetic on raw
 rows is unauditable, and a retailer argues with the numbers before they argue
-with the advice. This already holds for `patron advise` and it must hold for
+with the advice. This already holds for `openv advise` and it must hold for
 chat.
 
 So chat is **not** text-to-SQL and **not** a model with database access. It is a
@@ -182,7 +182,7 @@ into a confident difference.
 `chat.py` runs the conversation over those tools and keeps every call as a
 citation, which is what the evidence panel reads. The cycle is bounded: a model
 that keeps asking for tools and never answers is cut off and says so, rather
-than returning a partial answer as if it were whole. `patron ask` is the CLI
+than returning a partial answer as if it were whole. `openv ask` is the CLI
 front end.
 
 The loop is tested against a scripted fake client, so the machinery is verified
@@ -197,15 +197,15 @@ and the proposal-from-answer flow.
 - **Every claim carries its provenance.** An answer cites the tool calls behind
   it, and the user can expand them. This is what makes the answer defensible in
   a room with a category manager who disagrees.
-- **No invented SKUs, brands or prices.** Patron knows zones, not products,
+- **No invented SKUs, brands or prices.** OpenV knows zones, not products,
   until M8. The existing system prompt already forbids papering over that gap.
 - **Chat can propose, never approve.** Same liability gate.
-- **The deterministic layer keeps working with no API key.** `patron analyze` is
+- **The deterministic layer keeps working with no API key.** `openv analyze` is
   the floor of the product and must never depend on a model being reachable.
 
 **Exit criteria:** a store manager asks "why is aisle 6 underperforming" and gets
 a ranked, cited answer whose every number can be reproduced by running
-`patron analyze` by hand.
+`openv analyze` by hand.
 
 ---
 
@@ -233,12 +233,12 @@ Automations route work to humans. They do not change stores.
   change for review.
 - Scheduled re-analysis, digests, weekly summaries.
 
-**The automation that matters most is re-measurement.** Built: `patron measure`
+**The automation that matters most is re-measurement.** Built: `openv measure`
 compares a zone across two sessions and returns a verdict rather than a delta,
 because two rates always differ by something and reporting that as a result
 makes noise look like evidence. `indistinguishable` is a real answer.
 
-`patron digest` decides what is worth sending, and says nothing when nothing is,
+`openv digest` decides what is worth sending, and says nothing when nothing is,
 because a daily "nothing to report" teaches people to mute the channel. Its exit
 code carries the decision so a scheduled job branches without parsing. A zone is
 re-measured if it is worrying now **or was worrying then**, so a problem that got
@@ -260,10 +260,10 @@ without anyone asking for it.
 
 **Goal:** say "the Brand X facing on the mid shelf" instead of "shelf-endcap".
 
-Patron knows zones, not products. CLAUDE.md frames this as a hardware limit
+OpenV knows zones, not products. CLAUDE.md frames this as a hardware limit
 awaiting Phase 3 hardware, but that framing is wrong: integrating with the
 retailer's own shelf-item system routes around it entirely. If their system knows
-which SKU sits at shelf position X, and Patron knows a reach happened in the zone
+which SKU sits at shelf position X, and OpenV knows a reach happened in the zone
 covering X, that is product-level insight with zero SKU vision and no new
 hardware.
 

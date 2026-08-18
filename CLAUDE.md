@@ -1,4 +1,4 @@
-# Patron
+# OpenV
 
 Agentic shopper-behavior intelligence that plugs into a store's existing security cameras.
 Cameras are the sensor. The agent layer is the product.
@@ -7,9 +7,9 @@ Cameras are the sensor. The agent layer is the product.
 
 ### 1. No AGPL dependencies. Ever.
 
-Patron ships as closed-source commercial software. An AGPL-3.0 dependency forces us to
-open-source the entire product or buy a commercial license, and it will blow up in
-technical due diligence.
+OpenV ships under the MIT license. An AGPL-3.0 dependency would force every downstream
+user who runs OpenV as a network service to publish their own source, which defeats the
+point of a permissive release. Keep every dependency permissive.
 
 **Banned:** `ultralytics` (any YOLO v5/v8/v11/v26 from Ultralytics), and anything
 transitively pulling it in.
@@ -22,9 +22,31 @@ Before adding a dependency, check its license. If it is AGPL or GPL, find anothe
 
 ### 2. Privacy posture is structural, not a setting
 
-This is what keeps us out of BIPA and EU AI Act exposure. Target and Home Depot are in
-active BIPA litigation over exactly this category. Damages run $1,000 to $5,000 per
-violation.
+This is what keeps us out of BIPA and EU AI Act exposure. Damages run $1,000 to $5,000 per
+violation, and the 2024 amendment (PA 103-0769) made repeat collection from the same person
+a single violation rather than one per scan, which is the difference between an existential
+number and a large one.
+
+Be precise about the caselaw, because the precision is the sales argument. *Arnold v.
+Target* (N.D. Ill., MTD denied Nov 2024) and *Jankowski v. Home Depot* (filed Aug 2025) are
+**facial recognition for loss prevention**, not behaviour analytics. That is the category we
+deliberately avoid, not the one we are in. What they establish is procedural and still
+matters: plaintiffs pleaded **on information and belief from news articles** and survived
+dismissal, and *Figueroa v. Kronos* makes software vendors directly liable with no privity.
+**A clean posture wins the case. It does not prevent the case.**
+
+The posture is genuinely strong on the merits: BIPA's definition is a closed list (retina,
+iris, fingerprint, voiceprint, scan of hand or face geometry) that excludes photographs and
+physical descriptions, and *Zellmer v. Meta* (9th Cir. 2024) holds that data which cannot
+identify an individual is not covered at all. Two honest limits on how we describe it:
+
+- "No retention" is a **data-minimisation** argument, not a scope argument. BIPA's verbs are
+  "collect, capture"; GDPR processing includes collection. GDPR applies to the pipeline even
+  though the output is anonymous.
+- MediaPipe computes all 33 landmarks including the facial ones. `pose.py` reads out only
+  indices 11-16. The claim we can defend is **"no facial landmark value is ever read out,
+  persisted, or transmitted"**, which is checkable in five lines. Not "we never compute
+  anything facial."
 
 - **Never** compute, store, or transmit face embeddings or any biometric identifier.
 - **Never** persist raw video or raw frames beyond the processing buffer.
@@ -63,6 +85,15 @@ fit exactly whatever the points are. The fifth point is the only automatic check
 that the calibration is on the ground plane; `floorview.rectify` is the manual
 one.
 
+That horizon guard reads the sign of `w`, and a homography is only determined up
+to scale, sign included. `cv2.findHomography` does not promise one, so `_solve`
+normalises it against the calibration points, which are on the ground plane by
+construction. Without that the guard inverts and **refuses every real floor point
+while accepting everything past the horizon**, which shows up as an empty
+`positions` table and no error anywhere. It fires on shallow-pitch
+corner-mounted cameras, which is the common retail geometry, and not on the
+near-overhead clip in `data/`. Do not remove the normalisation.
+
 Stitching a shopper across cameras is a form of re-identification, so it collides
 with constraint 2. Spatial-temporal handoff on the floor plane (a track leaving
 one frustum where another enters) needs no appearance model and keeps the posture
@@ -78,8 +109,8 @@ implementation detail.
 - **M4** live camera end to end  (done for the software path; unrun on a real
   fixed camera, which is the outstanding gate)
 
-`patron live` writes to the same event store the offline pipeline does, so a live
-session is analysable afterwards with the same `patron analyze`. It also accepts a
+`openv live` writes to the same event store the offline pipeline does, so a live
+session is analysable afterwards with the same `openv analyze`. It also accepts a
 video file as its source, which is what makes the live path testable and demoable
 with no camera present. **Looping a file into the event store double-counts
 shoppers on every pass** — fine for a demo, meaningless as a measurement, and the
@@ -91,12 +122,12 @@ arithmetic on raw rows would be unauditable, and a retailer argues with the numb
 before the advice. Recommendations are stored with status `proposed`; no code path
 sets `approved`, because approval is the liability gate.
 
-**Patron knows zones, not products.** It cannot say "move SKU-204" — that needs
+**OpenV knows zones, not products.** It cannot say "move SKU-204" — that needs
 SKU-level identification, which is out of scope until Phase 3 hardware. The agent's
 system prompt forbids inventing SKUs, brands, or prices to paper over that gap.
 
 The deterministic layer must keep working with no API key. It is the floor of the
-product, and `patron analyze` is the command that proves it.
+product, and `openv analyze` is the command that proves it.
 
 Zone `kind` decides which body point membership is tested against, and that is the
 whole difference between a visit and a reach. `shelf` zones test **wrists**, every

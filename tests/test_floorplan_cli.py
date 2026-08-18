@@ -10,8 +10,8 @@ standing in for no evidence at all.
 import numpy as np
 import pytest
 
-from patron.cli import _calibration_status
-from patron.floor import FloorMap
+from openv.cli import _calibration_status
+from openv.floor import FloorMap
 
 H_TRUE = np.array([[0.01, 0.0, 0.0], [0.0, 0.008, 0.0], [0.0, -0.0005, 1.0]])
 

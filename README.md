@@ -1,8 +1,8 @@
-# Patron
+# OpenV
 
 Agentic shopper-behavior intelligence on existing store cameras.
 
-Patron reads a store's existing security camera feeds, turns shopper behavior into a
+OpenV reads a store's existing security camera feeds, turns shopper behavior into a
 structured event stream, and runs an agent over that stream that diagnoses what is going
 wrong at the shelf and drafts the fix: planogram changes, packaging briefs, ad variants.
 
@@ -24,19 +24,19 @@ uv sync
 Grab the grocery store sample footage:
 
 ```bash
-uv run patron fetch-sample grocery-store
+uv run openv fetch-sample grocery-store
 ```
 
 Run on it:
 
 ```bash
-uv run patron track data/grocery-store.mp4 --out out/tracked.mp4
+uv run openv track data/grocery-store.mp4 --out out/tracked.mp4
 ```
 
 Run on a webcam:
 
 ```bash
-uv run patron track webcam:0 --show
+uv run openv track webcam:0 --show
 ```
 
 ## Live console
@@ -44,10 +44,10 @@ uv run patron track webcam:0 --show
 Camera in, overlay and running numbers in the browser. Draw zones by clicking on
 the video. Everything it measures goes to the same event store the offline
 pipeline writes, so a live session is analysable afterwards with the same
-`patron analyze`.
+`openv analyze`.
 
 ```bash
-uv run patron live --pose
+uv run openv live --pose
 ```
 
 The source can be a video file instead of a camera. File replay loops and is paced
@@ -55,7 +55,7 @@ to the source framerate, so the whole live path is demonstrable and testable wit
 no camera in front of it:
 
 ```bash
-uv run patron live --source data/grocery-store.mp4 --zones data/grocery.zones.json --pose
+uv run openv live --source data/grocery-store.mp4 --zones data/grocery.zones.json --pose
 ```
 
 Pacing matters: replaying a file as fast as it decodes would make every dwell
@@ -66,7 +66,7 @@ number meaningless against the clock the viewer is watching.
 | `--source` | `webcam:N`, or a video file to replay |
 | `--pose` | enable reach detection on shelf zones |
 | `--floor` | floor.json, adds the plan view and records positions |
-| `--db PATH` | event store for the session (default `out/patron.db`) |
+| `--db PATH` | event store for the session (default `out/openv.db`) |
 | `--no-db` | do not persist; numbers vanish on exit |
 | `--no-loop` | stop at the end of a video file instead of rewinding |
 
@@ -87,7 +87,7 @@ Fixed-camera footage is what this is built for. The bundled samples cannot valid
 dwell: one is 8 seconds long, the other has a moving camera.
 
 ```bash
-uv run patron record --out data/my-store.mp4 --seconds 600
+uv run openv record --out data/my-store.mp4 --seconds 600
 ```
 
 The camera must not move once recording starts.
@@ -104,21 +104,21 @@ Draw the areas you want numbers for. Click points, `n` to name and close a zone,
 `s` to save.
 
 ```bash
-uv run patron zones data/grocery-store.mp4 --out data/store.zones.json
+uv run openv zones data/grocery-store.mp4 --out data/store.zones.json
 ```
 
 Then track with zones enabled. Every shopper's stay in every zone becomes a visit
 record in SQLite, and the funnel prints at the end.
 
 ```bash
-uv run patron track data/grocery-store.mp4 --zones data/store.zones.json --db out/patron.db
+uv run openv track data/grocery-store.mp4 --zones data/store.zones.json --db out/openv.db
 ```
 
 Re-read the numbers any time:
 
 ```bash
-uv run patron report --db out/patron.db
-uv run patron report --db out/patron.db --all-sessions
+uv run openv report --db out/openv.db
+uv run openv report --db out/openv.db --all-sessions
 ```
 
 ### What a visit is
@@ -156,7 +156,7 @@ Zone `kind` picks which body point is tested:
 Draw a `shelf` zone over the shelf face, then run with pose on:
 
 ```bash
-uv run patron track data/my-store.mp4 --zones data/my.zones.json --db out/patron.db --pose
+uv run openv track data/my-store.mp4 --zones data/my.zones.json --db out/openv.db --pose
 ```
 
 Pose costs roughly 14ms per person per frame and is off by default.
@@ -164,7 +164,7 @@ Pose costs roughly 14ms per person per frame and is off by default.
 ## Analysis and recommendations (M3)
 
 ```bash
-uv run patron analyze --db out/patron.db
+uv run openv analyze --db out/openv.db
 ```
 
 ```
@@ -199,7 +199,7 @@ shoppers is a lie dressed as data.
 ### The agent
 
 ```bash
-uv run patron advise --db out/patron.db
+uv run openv advise --db out/openv.db
 ```
 
 Needs credentials (`ANTHROPIC_API_KEY`, or `ant auth login`). Two rules it runs
@@ -210,7 +210,7 @@ under:
 - **It never executes.** Output is stored with status `proposed`. No code path sets
   `approved`, because approval is a human decision and that is the liability gate.
 
-Patron knows zones, not products, so recommendations cover placement, shelf height,
+OpenV knows zones, not products, so recommendations cover placement, shelf height,
 facing count, and signage — not "move SKU-204". The system prompt forbids inventing
 SKUs or prices to cover that gap.
 
@@ -219,7 +219,7 @@ If credentials are missing, `analyze` is unaffected: it needs no model at all.
 ### Telling someone
 
 ```bash
-uv run patron digest --db out/patron.db --compare
+uv run openv digest --db out/openv.db --compare
 ```
 
 A finding nobody reads is worth nothing. The hard part is not the sending, it is
@@ -240,8 +240,8 @@ announce every failure and no success.
 To actually send it:
 
 ```bash
-uv run patron digest --db out/patron.db --compare --dry-run
-uv run patron digest --db out/patron.db --compare --webhook "$SLACK_WEBHOOK_URL"
+uv run openv digest --db out/openv.db --compare --dry-run
+uv run openv digest --db out/openv.db --compare --webhook "$SLACK_WEBHOOK_URL"
 ```
 
 Slack, Discord, Teams and Google Chat incoming webhooks all accept the default
@@ -260,12 +260,12 @@ asserts this rather than trusting the sentence.
 ### Did the change work?
 
 ```bash
-uv run patron measure endcap --db out/patron.db
+uv run openv measure endcap --db out/openv.db
 ```
 
 With no session ids it compares the two most recent runs that actually contain
 that zone, and prints which pair it picked. `--before` and `--after` override it,
-and `patron sessions` lists what has been recorded.
+and `openv sessions` lists what has been recorded.
 
 The question a retailer asks after acting on a recommendation, and the one that
 makes this renewable rather than a one-off study. It needs no model.
@@ -282,7 +282,7 @@ answer is a verdict rather than a delta:
 | `not_enough_data` | no rate exists on one side, so there is nothing to compare |
 
 Measured: 30 shoppers before and after, 5 reaches then 7. That is a 40% relative
-improvement if you are careless. Patron calls it `indistinguishable` at p = 0.52
+improvement if you are careless. OpenV calls it `indistinguishable` at p = 0.52
 and prints "This is not a result. Do not plan against it."
 
 The test is a pooled two-proportion z-test at p < 0.05. When the normal
@@ -293,7 +293,7 @@ like the others and is not comparable to them.
 ### Asking questions
 
 ```bash
-uv run patron ask "which shelf is losing the most shoppers" --db out/patron.db
+uv run openv ask "which shelf is losing the most shoppers" --db out/openv.db
 ```
 
 `advise` hands the model a fixed set of findings. `ask` cannot work that way,
@@ -385,9 +385,9 @@ feet visible, no trolley or counter cutting off your legs**, which is the whole
 point: the existing clip fails precisely because it does not.
 
 ```bash
-uv run patron record --out data/reach-test.mp4 --seconds 120 --countdown 10
-uv run patron zones data/reach-test.mp4 --out data/reach-test.zones.json   # 's' for shelf
-uv run patron fixture data/reach-test.mp4 \
+uv run openv record --out data/reach-test.mp4 --seconds 120 --countdown 10
+uv run openv zones data/reach-test.mp4 --out data/reach-test.zones.json   # 's' for shelf
+uv run openv fixture data/reach-test.mp4 \
   --zones data/reach-test.zones.json \
   --out tests/fixtures/reach_visible_poses.json \
   --reach 200-260 --reach 500-560 \
@@ -395,7 +395,7 @@ uv run patron fixture data/reach-test.mp4 \
   --note "whole body visible, deliberate reach into a shelf"
 ```
 
-`patron fixture` captures the keypoints and runs the anatomy check on the spot,
+`openv fixture` captures the keypoints and runs the anatomy check on the spot,
 so you find out immediately whether the clip is usable rather than after
 analysis. If it reports the arm at around 0.44 of box height, the clip can
 settle the threshold. If it reports 0.52 or more, the body is still cut off and
@@ -404,7 +404,7 @@ the footage tells us nothing new.
 Then ask what the pooled fixtures say the threshold should be:
 
 ```bash
-uv run patron reach-threshold tests/fixtures/reach_poses.json tests/fixtures/reach_visible_poses.json
+uv run openv reach-threshold tests/fixtures/reach_poses.json tests/fixtures/reach_visible_poses.json
 ```
 
 It reads the same `extension_ratio` the detector uses, so the number under
@@ -452,9 +452,16 @@ Two things dominate whether a shopper gets seen at all, and both are tunable.
 | `--slice 640` | 138 | 0.88 | 2.35s |
 
 Tiling is the difference between missing a crowd entirely and resolving all of it. It costs
-roughly 15x the compute, so it is opt-in per camera. Note that behavior analytics does not
-need 30fps: dwell, path and conversion are all fine at 2 to 5fps, which is what makes the
-tiled mode practical on real hardware.
+roughly 8x the compute at `--slice 896`, which the table above shows directly (0.15s to
+1.32s), so it is opt-in per camera. Two numbers get confused here and they are not the
+same: tiling with pose runs at roughly **15x realtime** on 1080p, but that is wall-clock
+against the source frame rate, not a ratio against whole-frame inference. Size hardware
+from the 8x.
+
+Note that behavior analytics does not need 30fps: dwell, path and conversion are all fine
+at 2 to 5fps, which is what makes the tiled mode practical on real hardware. Tiling is also
+not free in accuracy terms, see `docs/loop-findings.md`: it inflates unique-shopper counts
+by roughly 18-29%, worst for far zones.
 
 fp16 was verified to match fp32 confidences to within 0.001, so it is on by default on CUDA.
 
@@ -473,7 +480,7 @@ pixels.
 Click a feature on the floor, type where it sits on the store plan, repeat:
 
 ```bash
-uv run patron floorplan data/my-store.mp4 --out data/my-store.floor.json
+uv run openv floorplan data/my-store.mp4 --out data/my-store.floor.json
 ```
 
 | Key | What it does |
@@ -491,8 +498,8 @@ maps one plane to another, so one point off the floor skews the whole mapping.
 Then record where shoppers actually stood:
 
 ```bash
-uv run patron track data/my-store.mp4 --zones data/my.zones.json \
-  --floor data/my-store.floor.json --db out/patron.db
+uv run openv track data/my-store.mp4 --zones data/my.zones.json \
+  --floor data/my-store.floor.json --db out/openv.db
 ```
 
 Positions are sampled at 1Hz per shopper rather than written every frame.
@@ -504,9 +511,9 @@ Read the paths back with no video involved, which is what any later question has
 to rely on:
 
 ```python
-from patron.store import EventStore
+from openv.store import EventStore
 
-with EventStore("out/patron.db") as store:
+with EventStore("out/openv.db") as store:
     paths = store.paths(store.latest_session_id())   # {track_id: [(t, x, y)]}
 ```
 

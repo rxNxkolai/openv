@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from patron.zones import Zone, ZoneSet
+from openv.zones import Zone, ZoneSet
 
 SQUARE = ((0, 0), (100, 0), (100, 100), (0, 100))
 

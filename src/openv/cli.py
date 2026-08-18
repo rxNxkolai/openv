@@ -16,10 +16,10 @@ OUT_DIR = REPO_ROOT / "out"
 def _cmd_track(args: argparse.Namespace) -> int:
     import cv2
 
-    from patron.detectors import RFDETRPersonDetector
-    from patron.pipeline import Pipeline
-    from patron.render import Renderer
-    from patron.sources import VideoSource
+    from openv.detectors import RFDETRPersonDetector
+    from openv.pipeline import Pipeline
+    from openv.render import Renderer
+    from openv.sources import VideoSource
 
     device = args.device
     if device is None:
@@ -51,7 +51,7 @@ def _cmd_track(args: argparse.Namespace) -> int:
         )
         pose_estimator = None
         if args.pose:
-            from patron.pose import PoseEstimator
+            from openv.pose import PoseEstimator
 
             pose_estimator = PoseEstimator()
             print("pose     MediaPipe (Apache 2.0), reach detection on")
@@ -67,12 +67,13 @@ def _cmd_track(args: argparse.Namespace) -> int:
         position_recorder = None
         store = None
         session_id = None
+        floor_map = None
         visits_written = 0
         reaches_written = 0
         positions_written = 0
 
         if args.floor:
-            from patron.floor import FloorMap, PositionRecorder
+            from openv.floor import FloorMap, PositionRecorder
 
             floor_map = FloorMap.load(args.floor)
             position_recorder = PositionRecorder(
@@ -86,8 +87,8 @@ def _cmd_track(args: argparse.Namespace) -> int:
             print(f"floor    {args.floor} ({checked})")
 
         if args.zones:
-            from patron.events import ReachTracker, VisitTracker
-            from patron.zones import ZoneSet
+            from openv.events import ReachTracker, VisitTracker
+            from openv.zones import ZoneSet
 
             zones = ZoneSet.load(args.zones)
             print(
@@ -121,11 +122,17 @@ def _cmd_track(args: argparse.Namespace) -> int:
         # The store is opened for zones or for floor positions. Opening it only
         # for zones would make `--floor` alone record nothing at all, silently.
         if args.zones or args.floor:
-            from patron.store import EventStore
+            from openv.store import EventStore
 
             store = EventStore(args.db)
             session_id = store.start_session(
-                source=args.source, fps=info.fps, width=info.width, height=info.height
+                source=args.source,
+                fps=info.fps,
+                width=info.width,
+                height=info.height,
+                # Recorded with the session, so the positions below stay meaningful
+                # without the .floor.json that produced them sitting next to the .db.
+                calibration=floor_map.as_dict() if floor_map is not None else None,
             )
             print(f"db       {args.db} (session {session_id})")
 
@@ -180,7 +187,7 @@ def _cmd_track(args: argparse.Namespace) -> int:
                     if writer is not None:
                         writer.write(canvas)
                     if args.show:
-                        cv2.imshow("patron", canvas)
+                        cv2.imshow("openv", canvas)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             break
 
@@ -246,9 +253,9 @@ def _cmd_bench_trackers(args: argparse.Namespace) -> int:
 
     import cv2
 
-    from patron.detectors import RFDETRPersonDetector
-    from patron.sources import VideoSource
-    from patron.tracking import ALGORITHMS, PersonTracker
+    from openv.detectors import RFDETRPersonDetector
+    from openv.sources import VideoSource
+    from openv.tracking import ALGORITHMS, PersonTracker
 
     algorithms = [a.strip() for a in args.trackers.split(",") if a.strip()]
     unknown = [a for a in algorithms if a not in ALGORITHMS]
@@ -350,8 +357,8 @@ def _cmd_bench_trackers(args: argparse.Namespace) -> int:
 
 
 def _load_analysis(args: argparse.Namespace):
-    from patron.analysis import analyze
-    from patron.store import EventStore
+    from openv.analysis import analyze
+    from openv.store import EventStore
 
     if not Path(args.db).exists():
         print(f"error: no database at {args.db}", file=sys.stderr)
@@ -363,7 +370,7 @@ def _load_analysis(args: argparse.Namespace):
 
 
 def _print_findings(analysis) -> None:
-    from patron.analysis import MIN_SHOPPERS_FOR_CONFIDENCE
+    from openv.analysis import MIN_SHOPPERS_FOR_CONFIDENCE
 
     if not analysis.findings:
         print("no shelf zones with reach data yet.")
@@ -410,7 +417,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
 
 def _cmd_advise(args: argparse.Namespace) -> int:
     """Agent recommendations over the computed findings."""
-    from patron.agent import AdvisorUnavailable, advise
+    from openv.agent import AdvisorUnavailable, advise
 
     store, session_id, analysis = _load_analysis(args)
     if store is None:
@@ -432,7 +439,7 @@ def _cmd_advise(args: argparse.Namespace) -> int:
         print(f"advisor unavailable: {exc}", file=sys.stderr)
         print(
             "\nThe funnel above is unaffected: it is computed locally and needs no"
-            " model.\nRun `patron analyze` for it without this step.",
+            " model.\nRun `openv analyze` for it without this step.",
             file=sys.stderr,
         )
         store.close()
@@ -461,7 +468,7 @@ def _cmd_live(args: argparse.Namespace) -> int:
 
     import uvicorn
 
-    from patron.web import LiveEngine, create_app
+    from openv.web import LiveEngine, create_app
 
     device = args.device
     if device is None:
@@ -629,13 +636,13 @@ def _cmd_record(args: argparse.Namespace) -> int:
     print(f"\n\nrecorded  {frames} frames, {elapsed:.1f}s, {size_mb:.1f} MB")
     print(f"saved     {out_path}")
     print("\nnext:")
-    print(f"  uv run patron zones {out_path} --out data/my.zones.json")
-    print(f"  uv run patron track {out_path} --zones data/my.zones.json --db out/patron.db")
+    print(f"  uv run openv zones {out_path} --out data/my.zones.json")
+    print(f"  uv run openv track {out_path} --zones data/my.zones.json --db out/openv.db")
     return 0
 
 
 def _print_summary(db_path: str, session_id: int | None) -> None:
-    from patron.store import EventStore
+    from openv.store import EventStore
 
     with EventStore(db_path) as store:
         rows = store.zone_summary(session_id)
@@ -683,7 +690,7 @@ def _print_summary(db_path: str, session_id: int | None) -> None:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    from patron.store import EventStore
+    from openv.store import EventStore
 
     if not Path(args.db).exists():
         print(f"error: no database at {args.db}", file=sys.stderr)
@@ -706,7 +713,7 @@ _TRACK_DEFAULTS = {
     "enter_seconds": 0.2,
     "exit_seconds": 0.5,
     "lost_seconds": 1.5,
-    "db": "out/patron.db",
+    "db": "out/openv.db",
 }
 
 
@@ -756,8 +763,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     """Ask a question about the store, answered through the tool layer."""
     import json
 
-    from patron.chat import ChatSession, ChatUnavailable
-    from patron.store import EventStore
+    from openv.chat import ChatSession, ChatUnavailable
+    from openv.store import EventStore
 
     if not Path(args.db).exists():
         print(f"error: no database at {args.db}", file=sys.stderr)
@@ -784,7 +791,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         except ChatUnavailable as exc:
             print(f"error: {exc}", file=sys.stderr)
             # analyze needs no model at all, and is the floor of the product.
-            print("\n`patron analyze` needs no credentials and still works.", file=sys.stderr)
+            print("\n`openv analyze` needs no credentials and still works.", file=sys.stderr)
             return 1
 
     print(answer.text)
@@ -819,8 +826,8 @@ def _cmd_digest(args: argparse.Namespace) -> int:
     """
     import json
 
-    from patron.digest import build_digest
-    from patron.store import EventStore
+    from openv.digest import build_digest
+    from openv.store import EventStore
 
     if not Path(args.db).exists():
         print(f"error: no database at {args.db}", file=sys.stderr)
@@ -843,7 +850,7 @@ def _cmd_digest(args: argparse.Namespace) -> int:
         print(digest.render())
 
     if args.webhook or args.dry_run:
-        from patron.deliver import build_payload, send
+        from openv.deliver import build_payload, send
 
         payload = build_payload(digest, args.format)
         if args.dry_run:
@@ -890,11 +897,11 @@ def _cmd_fixture(args: argparse.Namespace) -> int:
     """
     import json
 
-    from patron.detectors.rfdetr_detector import RFDETRPersonDetector
-    from patron.pipeline import Pipeline
-    from patron.pose import PoseEstimator
-    from patron.sources import VideoSource
-    from patron.zones import ZoneSet
+    from openv.detectors.rfdetr_detector import RFDETRPersonDetector
+    from openv.pipeline import Pipeline
+    from openv.pose import PoseEstimator
+    from openv.sources import VideoSource
+    from openv.zones import ZoneSet
 
     reach_ranges = _parse_ranges(args.reach)
     not_reach_ranges = _parse_ranges(args.not_reach)
@@ -1022,12 +1029,12 @@ def _cmd_reach_threshold(args: argparse.Namespace) -> int:
     import json
     import math
 
-    from patron.events import (
+    from openv.events import (
         DEFAULT_MIN_ARM_EXTENSION,
         FRAME_EDGE_MARGIN_PX,
         extension_ratio,
     )
-    from patron.types import Pose
+    from openv.types import Pose
 
     positives: list[tuple[float, str, int]] = []
     negatives: list[tuple[float, str, int]] = []
@@ -1168,7 +1175,7 @@ def _report_anatomy(samples: list[dict]) -> None:
 
 def _cmd_sessions(args: argparse.Namespace) -> int:
     """List what has been recorded, so session ids stop being magic numbers."""
-    from patron.store import EventStore
+    from openv.store import EventStore
 
     if not Path(args.db).exists():
         print(f"error: no database at {args.db}", file=sys.stderr)
@@ -1199,8 +1206,8 @@ def _cmd_sessions(args: argparse.Namespace) -> int:
 
 def _cmd_measure(args: argparse.Namespace) -> int:
     """Did a change to a zone work? Needs no model."""
-    from patron.analysis import measure_change
-    from patron.store import EventStore
+    from openv.analysis import measure_change
+    from openv.store import EventStore
 
     if not Path(args.db).exists():
         print(f"error: no database at {args.db}", file=sys.stderr)
@@ -1221,7 +1228,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
                     f"Two are needed to measure a change.",
                     file=sys.stderr,
                 )
-                print("`patron sessions` lists what has been recorded.", file=sys.stderr)
+                print("`openv sessions` lists what has been recorded.", file=sys.stderr)
                 return 1
             after = after if after is not None else candidates[0]
             before = before if before is not None else candidates[1]
@@ -1268,7 +1275,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
 
 def _cmd_threads(args: argparse.Namespace) -> int:
     """List saved conversations."""
-    from patron.store import EventStore
+    from openv.store import EventStore
 
     if not Path(args.db).exists():
         print(f"error: no database at {args.db}", file=sys.stderr)
@@ -1282,7 +1289,7 @@ def _cmd_threads(args: argparse.Namespace) -> int:
                 print(f"no messages in thread {args.thread}")
                 return 0
             for message in messages:
-                who = "you" if message["role"] == "user" else "patron"
+                who = "you" if message["role"] == "user" else "openv"
                 print(f"\n[{who}]  {message['created_at']}")
                 print(message["text"])
                 if message["citations"]:
@@ -1293,7 +1300,7 @@ def _cmd_threads(args: argparse.Namespace) -> int:
             return 0
 
     if not threads:
-        print("no saved threads. `patron ask ... --save \"a title\"` starts one.")
+        print("no saved threads. `openv ask ... --save \"a title\"` starts one.")
         return 0
 
     print(f"{'id':>4}  {'msgs':>4}  {'started':<20}  title")
@@ -1314,7 +1321,7 @@ def _calibration_status(floor_map, point_count: int, units: str) -> tuple[str, b
     reprojection error would show a reassuring 0.000 for a mapping nothing has
     checked, including one clicked entirely on shelf edges.
     """
-    from patron.floor import MIN_CORRESPONDENCES
+    from openv.floor import MIN_CORRESPONDENCES
 
     if point_count < MIN_CORRESPONDENCES:
         return f"{point_count}/{MIN_CORRESPONDENCES} points, need more", True
@@ -1342,8 +1349,8 @@ def _cmd_floorplan(args: argparse.Namespace) -> int:
     import cv2
     import numpy as np
 
-    from patron.floor import MIN_CORRESPONDENCES, FloorMap
-    from patron.floorview import rectify
+    from openv.floor import MIN_CORRESPONDENCES, FloorMap
+    from openv.floorview import rectify
 
     cap = cv2.VideoCapture(args.source)
     if not cap.isOpened():
@@ -1367,7 +1374,7 @@ def _cmd_floorplan(args: argparse.Namespace) -> int:
         if event == cv2.EVENT_LBUTTONDOWN and not pending:
             pending.append((x, y))
 
-    window = "patron floorplan"
+    window = "openv floorplan"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, view.shape[1], view.shape[0])
     cv2.setMouseCallback(window, on_mouse)
@@ -1479,7 +1486,7 @@ def _cmd_zones(args: argparse.Namespace) -> int:
     import cv2
     import numpy as np
 
-    from patron.zones import FLOOR_KIND, SHELF_KIND, Zone, ZoneSet
+    from openv.zones import FLOOR_KIND, SHELF_KIND, Zone, ZoneSet
 
     cap = cv2.VideoCapture(args.source)
     if not cap.isOpened():
@@ -1503,7 +1510,7 @@ def _cmd_zones(args: argparse.Namespace) -> int:
         if event == cv2.EVENT_LBUTTONDOWN:
             points.append((x, y))
 
-    window = "patron zones"
+    window = "openv zones"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, view.shape[1], view.shape[0])
     cv2.setMouseCallback(window, on_mouse)
@@ -1590,7 +1597,7 @@ def _cmd_fetch_sample(args: argparse.Namespace) -> int:
         print("available sample videos:\n")
         for name in names:
             print(f"  {name.lower().replace('_', '-')}")
-        print("\npick one, e.g.  patron fetch-sample people-walking")
+        print("\npick one, e.g.  openv fetch-sample people-walking")
         return 0
 
     wanted = args.name.upper().replace("-", "_")
@@ -1613,7 +1620,7 @@ def _cmd_fetch_sample(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="patron", description="Shopper-behavior intelligence on store cameras."
+        prog="openv", description="Shopper-behavior intelligence on store cameras."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1660,8 +1667,8 @@ def main(argv: list[str] | None = None) -> int:
         help="run pose estimation, needed for reach detection on shelf zones",
     )
     # Spelled out rather than imported from events.DEFAULT_MIN_ARM_EXTENSION:
-    # patron.events costs ~670ms to import and that would land on every
-    # `patron --help`. The CLI always passes this through explicitly, so the
+    # openv.events costs ~670ms to import and that would land on every
+    # `openv --help`. The CLI always passes this through explicitly, so the
     # constructor default only applies to direct API use.
     track.add_argument(
         "--min-arm-extension",
@@ -1673,7 +1680,7 @@ def main(argv: list[str] | None = None) -> int:
     track.add_argument("--zones", help="zones.json, enables visit capture")
     track.add_argument(
         "--floor",
-        help="floor.json from `patron floorplan`, records where shoppers stood "
+        help="floor.json from `openv floorplan`, records where shoppers stood "
         "in store floor coordinates",
     )
     track.add_argument(
@@ -1684,7 +1691,7 @@ def main(argv: list[str] | None = None) -> int:
         "dwell are fine at 1Hz and per-frame rows buy nothing (default: 1.0)",
     )
     track.add_argument(
-        "--db", default="out/patron.db", help="event store path (default: out/patron.db)"
+        "--db", default="out/openv.db", help="event store path (default: out/openv.db)"
     )
     track.add_argument(
         "--enter-seconds",
@@ -1725,7 +1732,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     live.add_argument(
         "--floor",
-        help="floor.json from `patron floorplan`, enables the plan view and "
+        help="floor.json from `openv floorplan`, enables the plan view and "
         "records where shoppers stood",
     )
     live.add_argument(
@@ -1735,7 +1742,7 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds between floor position samples per shopper (default: 1.0)",
     )
     live.add_argument(
-        "--db", default="out/patron.db", help="event store for the live session"
+        "--db", default="out/openv.db", help="event store for the live session"
     )
     live.add_argument(
         "--no-db", action="store_true", help="do not persist, numbers vanish on exit"
@@ -1780,7 +1787,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ask = sub.add_parser("ask", help="ask a question about the store")
     ask.add_argument("question", help="what you want to know, in plain language")
-    ask.add_argument("--db", default="out/patron.db", help="event store to answer from")
+    ask.add_argument("--db", default="out/openv.db", help="event store to answer from")
     ask.add_argument(
         "--all-sessions", action="store_true", help="answer across every session"
     )
@@ -1811,13 +1818,13 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help="session id after the change (default: most recent with this zone)",
     )
-    measure.add_argument("--db", default="out/patron.db", help="event store to read")
+    measure.add_argument("--db", default="out/openv.db", help="event store to read")
     measure.set_defaults(func=_cmd_measure)
 
     digest = sub.add_parser(
         "digest", help="what is worth telling someone, or nothing at all"
     )
-    digest.add_argument("--db", default="out/patron.db", help="event store to read")
+    digest.add_argument("--db", default="out/openv.db", help="event store to read")
     digest.add_argument(
         "--all-sessions", action="store_true", help="digest every session together"
     )
@@ -1898,11 +1905,11 @@ def main(argv: list[str] | None = None) -> int:
     threshold.set_defaults(func=_cmd_reach_threshold)
 
     sessions = sub.add_parser("sessions", help="list recorded sessions")
-    sessions.add_argument("--db", default="out/patron.db", help="event store to read")
+    sessions.add_argument("--db", default="out/openv.db", help="event store to read")
     sessions.set_defaults(func=_cmd_sessions)
 
     threads = sub.add_parser("threads", help="list or read saved conversations")
-    threads.add_argument("--db", default="out/patron.db", help="event store to read")
+    threads.add_argument("--db", default="out/openv.db", help="event store to read")
     threads.add_argument("--thread", type=int, help="print this thread's messages")
     threads.set_defaults(func=_cmd_threads)
 
@@ -1927,7 +1934,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = sub.add_parser("report", help="per-zone funnel numbers from the event store")
     report.add_argument(
-        "--db", default="out/patron.db", help="event store path (default: out/patron.db)"
+        "--db", default="out/openv.db", help="event store path (default: out/openv.db)"
     )
     report.add_argument(
         "--all-sessions", action="store_true", help="aggregate across every session"
@@ -1959,7 +1966,7 @@ def main(argv: list[str] | None = None) -> int:
     analyze_p = sub.add_parser(
         "analyze", help="funnel analysis and ranked findings (no model needed)"
     )
-    analyze_p.add_argument("--db", default="out/patron.db")
+    analyze_p.add_argument("--db", default="out/openv.db")
     analyze_p.add_argument("--all-sessions", action="store_true")
     analyze_p.add_argument(
         "--stop-seconds",
@@ -1972,7 +1979,7 @@ def main(argv: list[str] | None = None) -> int:
     advise_p = sub.add_parser(
         "advise", help="agent recommendations over the findings (needs credentials)"
     )
-    advise_p.add_argument("--db", default="out/patron.db")
+    advise_p.add_argument("--db", default="out/openv.db")
     advise_p.add_argument("--all-sessions", action="store_true")
     advise_p.add_argument("--stop-seconds", type=float, default=2.0)
     advise_p.add_argument("--model", default="claude-opus-5")

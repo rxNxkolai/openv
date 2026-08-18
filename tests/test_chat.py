@@ -13,9 +13,9 @@ import json
 
 import pytest
 
-from patron.chat import ChatSession, ChatUnavailable
-from patron.events import ZoneVisit
-from patron.store import EventStore
+from openv.chat import ChatSession, ChatUnavailable
+from openv.events import ZoneVisit
+from openv.store import EventStore
 
 
 # --------------------------------------------------------------------------

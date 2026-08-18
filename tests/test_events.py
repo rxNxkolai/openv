@@ -2,9 +2,9 @@
 
 import pytest
 
-from patron.events import VisitTracker
-from patron.types import Box, FrameResult, TrackedPerson
-from patron.zones import Zone, ZoneSet
+from openv.events import VisitTracker
+from openv.types import Box, FrameResult, TrackedPerson
+from openv.zones import Zone, ZoneSet
 
 FPS = 10.0
 

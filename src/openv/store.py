@@ -17,16 +17,28 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from patron.events import ZoneVisit
+from openv.events import ZoneVisit
 
 SCHEMA = """
+-- `calibration` is the floor calibration this session's positions were measured
+-- against, as JSON, or NULL when no floor map was used. It is the correspondences
+-- and units rather than the solved matrix, for the reason floor.py gives: the
+-- clicked points are reviewable and re-judgeable later, nine opaque floats are not.
+--
+-- Without this a stored position is a raw number in an unrecorded frame. You could
+-- not say what origin it was measured from, whether the calibration was sound, or
+-- whether two sessions are even in the same coordinate space. That matters most
+-- for the thing the floor plane exists to enable: several cameras describing one
+-- store. Fused cross-camera positions cannot be validated afterwards if none of the
+-- homographies that produced them were written down.
 CREATE TABLE IF NOT EXISTS sessions (
     id          INTEGER PRIMARY KEY,
     source      TEXT    NOT NULL,
     started_at  TEXT    NOT NULL,
     fps         REAL    NOT NULL,
     width       INTEGER NOT NULL,
-    height      INTEGER NOT NULL
+    height      INTEGER NOT NULL,
+    calibration TEXT
 );
 
 CREATE TABLE IF NOT EXISTS visits (
@@ -139,24 +151,61 @@ class EventStore:
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
 
+    def _migrate(self) -> None:
+        """Bring an older database up to the current schema.
+
+        `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists,
+        so a column added later never reaches a store somebody has been recording
+        into. Additive and idempotent on purpose: a `.db` from an earlier version
+        stays readable, and its sessions simply report no calibration, which is
+        the truth about them.
+        """
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")
+        }
+        if "calibration" not in columns:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN calibration TEXT")
+
     def start_session(
-        self, source: str, fps: float, width: int, height: int
+        self,
+        source: str,
+        fps: float,
+        width: int,
+        height: int,
+        calibration: dict | None = None,
     ) -> int:
         cursor = self._conn.execute(
-            "INSERT INTO sessions (source, started_at, fps, width, height)"
-            " VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (source, started_at, fps, width, height, calibration)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (
                 source,
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 float(fps),
                 int(width),
                 int(height),
+                json.dumps(calibration) if calibration is not None else None,
             ),
         )
         self._conn.commit()
         return int(cursor.lastrowid)
+
+    def session_calibration(self, session_id: int) -> dict | None:
+        """The floor calibration a session's positions were measured against.
+
+        None when the session ran without a floor map, and also when it predates
+        the column. Those are different situations and the caller usually cannot
+        tell them apart, which is an argument for recording it from now on rather
+        than for pretending the old rows had one.
+        """
+        row = self._conn.execute(
+            "SELECT calibration FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None or row["calibration"] is None:
+            return None
+        return json.loads(row["calibration"])
 
     def add_reaches(self, session_id: int, reaches: Iterable[ZoneVisit]) -> int:
         return self._add_spans("reaches", session_id, reaches)

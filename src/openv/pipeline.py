@@ -12,10 +12,10 @@ from collections.abc import Iterator
 
 import numpy as np
 
-from patron.detectors.base import PersonDetector
-from patron.sources import VideoSource
-from patron.tracking import PersonTracker
-from patron.types import FrameResult
+from openv.detectors.base import PersonDetector
+from openv.sources import VideoSource
+from openv.tracking import PersonTracker
+from openv.types import FrameResult
 
 
 class Pipeline:

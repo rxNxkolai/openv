@@ -2,9 +2,9 @@
 
 import pytest
 
-from patron.analysis import MIN_SHOPPERS_FOR_CONFIDENCE, analyze
-from patron.events import ZoneSpan
-from patron.store import EventStore
+from openv.analysis import MIN_SHOPPERS_FOR_CONFIDENCE, analyze
+from openv.events import ZoneSpan
+from openv.store import EventStore
 
 
 def span(track_id: int, zone: str, start: float, end: float) -> ZoneSpan:

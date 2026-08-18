@@ -37,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 
-from patron.types import FrameResult
+from openv.types import FrameResult
 
 MIN_CORRESPONDENCES = 4
 
@@ -98,6 +98,20 @@ class FloorMap:
                 "could not solve a homography from these points. Three or more "
                 "collinear points, or duplicates, make the system degenerate"
             )
+
+        # A homography is only determined up to scale, and that scale includes
+        # sign: -H and H describe the same projective map. `project` reads the
+        # sign of w as "is this point in front of the camera or beyond the
+        # horizon", so on the wrong sign that test inverts. It then refuses
+        # every real floor point and accepts everything past the horizon, and
+        # the symptom is an empty positions table with no error anywhere.
+        #
+        # The calibration points are on the ground plane by construction, so
+        # they are what fixes the sign. Median rather than sum, so one badly
+        # clicked point cannot outvote the rest.
+        w = matrix[2] @ np.vstack([image.T, np.ones(len(image))])
+        if np.median(w) < 0:
+            matrix = -matrix
         return matrix
 
     def project(self, point: tuple[float, float]) -> tuple[float, float] | None:
@@ -170,19 +184,25 @@ class FloorMap:
                 out[person.track_id] = projected
         return out
 
+    def as_dict(self) -> dict:
+        """The calibration in the same shape `save` and `load` use.
+
+        One definition, because a calibration written into the event store and one
+        written to a file have to round-trip through `load` identically. A session
+        that recorded a calibration nobody can reconstruct is no better than one
+        that recorded none.
+        """
+        return {
+            "units": self.units,
+            "correspondences": [
+                {"image": list(image), "floor": list(floor)}
+                for image, floor in self.correspondences
+            ],
+        }
+
     def save(self, path: str | Path) -> None:
         Path(path).write_text(
-            json.dumps(
-                {
-                    "units": self.units,
-                    "correspondences": [
-                        {"image": list(image), "floor": list(floor)}
-                        for image, floor in self.correspondences
-                    ],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+            json.dumps(self.as_dict(), indent=2), encoding="utf-8"
         )
 
     @classmethod

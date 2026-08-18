@@ -6,9 +6,9 @@ engaged with it, so false reaches are worse than missed ones.
 
 import pytest
 
-from patron.events import ReachTracker, VisitTracker
-from patron.types import Box, FrameResult, Pose, TrackedPerson
-from patron.zones import Zone, ZoneSet
+from openv.events import ReachTracker, VisitTracker
+from openv.types import Box, FrameResult, Pose, TrackedPerson
+from openv.zones import Zone, ZoneSet
 
 FPS = 10.0
 

@@ -9,10 +9,10 @@ that from happening quietly.
 
 import pytest
 
-from patron.analysis import MIN_SHOPPERS_FOR_CONFIDENCE
-from patron.events import ZoneVisit
-from patron.store import EventStore
-from patron.tools import TOOL_SPECS, TOOLS, call
+from openv.analysis import MIN_SHOPPERS_FOR_CONFIDENCE
+from openv.events import ZoneVisit
+from openv.store import EventStore
+from openv.tools import TOOL_SPECS, TOOLS, call
 
 
 def span(track_id: int, zone: str, entered_s: float, exited_s: float) -> ZoneVisit:

@@ -25,8 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from patron.analysis import Change, Finding, StoreAnalysis, analyze, measure_change
-from patron.store import EventStore
+from openv.analysis import Change, Finding, StoreAnalysis, analyze, measure_change
+from openv.store import EventStore
 
 # Only these reach a person unprompted. A "low" finding is context for someone
 # already looking, not a reason to interrupt.

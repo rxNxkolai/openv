@@ -19,7 +19,7 @@ import math
 import statistics
 from dataclasses import dataclass
 
-from patron.store import EventStore
+from openv.store import EventStore
 
 # Below this many shoppers, a rate is noise. Reporting "0% reach rate" off three
 # shoppers as a finding would be worse than reporting nothing.

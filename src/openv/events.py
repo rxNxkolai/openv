@@ -26,8 +26,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from patron.types import FrameResult, Pose
-from patron.zones import ZoneSet
+from openv.types import FrameResult, Pose
+from openv.zones import ZoneSet
 
 # Wrist-to-shoulder distance, in units of the shopper's own shoulder width, before
 # a hand inside a shelf zone counts as engagement.

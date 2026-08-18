@@ -1,7 +1,7 @@
 """Patron: agentic shopper-behavior intelligence on existing store cameras."""
 
-from patron.pipeline import Pipeline
-from patron.types import Box, FrameResult, TrackedPerson
+from openv.pipeline import Pipeline
+from openv.types import Box, FrameResult, TrackedPerson
 
 __version__ = "0.1.0"
 
