@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from openv.events import ZoneVisit
+from openv.zones import Zone, ZoneSet
 
 SCHEMA = """
 -- `calibration` is the floor calibration this session's positions were measured
@@ -38,7 +39,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     fps         REAL    NOT NULL,
     width       INTEGER NOT NULL,
     height      INTEGER NOT NULL,
-    calibration TEXT
+    calibration TEXT,
+    -- 1 when pose ran, 0 when it did not, NULL for sessions recorded
+    -- before this was written down. A shelf zone with no reaches means
+    -- a dead fixture only if a reach could have been seen at all.
+    pose        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS visits (
@@ -104,6 +109,23 @@ CREATE INDEX IF NOT EXISTS idx_positions_session_track
 -- than recomputed because a tool result is a claim about a moment: re-running
 -- the same call next month answers a different question, and an answer whose
 -- evidence has silently moved underneath it is worse than one with none.
+-- The zone set a session was measured against. Without it a shelf zone
+-- that recorded no reaches leaves no trace at all, so the deadest fixture
+-- in the store is the one `analyze` cannot mention; `measure` cannot tell
+-- that a polygon moved between two sessions and compares across the change
+-- with a confident p-value; and a `.db` is unreadable without the zones
+-- file that happened to sit next to it. The polygon itself is stored rather
+-- than a hash of it, for the reason `calibration` stores clicked points: a
+-- polygon can be drawn on a frame and judged, a hash cannot.
+CREATE TABLE IF NOT EXISTS zones (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id),
+    name        TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,
+    polygon     TEXT    NOT NULL,
+    UNIQUE (session_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id          INTEGER PRIMARY KEY,
     session_id  INTEGER REFERENCES sessions(id),
@@ -168,6 +190,8 @@ class EventStore:
         }
         if "calibration" not in columns:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN calibration TEXT")
+        if "pose" not in columns:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN pose INTEGER")
 
     def start_session(
         self,
@@ -176,10 +200,18 @@ class EventStore:
         width: int,
         height: int,
         calibration: dict | None = None,
+        zones: ZoneSet | None = None,
+        pose: bool | None = None,
     ) -> int:
+        """Open a session and record what it was measured against.
+
+        `zones` and `pose` are the two facts a later reader needs to interpret
+        an absence: a shelf with no reach rows is a dead fixture if the zone
+        was drawn and pose ran, and nothing at all otherwise.
+        """
         cursor = self._conn.execute(
-            "INSERT INTO sessions (source, started_at, fps, width, height, calibration)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (source, started_at, fps, width, height, calibration, pose)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 source,
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -187,10 +219,81 @@ class EventStore:
                 int(width),
                 int(height),
                 json.dumps(calibration) if calibration is not None else None,
+                None if pose is None else int(bool(pose)),
             ),
         )
+        session_id = int(cursor.lastrowid)
+        if zones is not None:
+            self._conn.executemany(
+                "INSERT INTO zones (session_id, name, kind, polygon) VALUES (?, ?, ?, ?)",
+                [
+                    (session_id, z.name, z.kind, json.dumps([list(p) for p in z.polygon]))
+                    for z in zones
+                ],
+            )
         self._conn.commit()
-        return int(cursor.lastrowid)
+        return session_id
+
+    def session_zones(self, session_id: int) -> ZoneSet | None:
+        """The zones a session was measured against, or None if unrecorded.
+
+        None rather than an empty set, because a session that ran with no
+        zones and a session from before zones were written down are different
+        situations, and only one of them should be read as 'nothing drawn'.
+        """
+        rows = self._conn.execute(
+            "SELECT name, kind, polygon FROM zones WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        if not rows:
+            return None
+        return ZoneSet(
+            zones=tuple(
+                Zone(
+                    name=r["name"],
+                    kind=r["kind"],
+                    polygon=tuple((float(x), float(y)) for x, y in json.loads(r["polygon"])),
+                )
+                for r in rows
+            )
+        )
+
+    def shelf_zones_measured(self, session_id: int | None = None) -> set[str]:
+        """Shelf zones that were drawn in a session where pose ran.
+
+        These are the zones where a reach could have been seen, so an absence
+        of reaches means something. A shelf drawn on a session with pose off
+        is not on this list, because zero reaches there is a setting, not a
+        finding.
+        """
+        where = "AND z.session_id = ?" if session_id is not None else ""
+        params = (session_id,) if session_id is not None else ()
+        rows = self._conn.execute(
+            f"""
+            SELECT DISTINCT z.name
+            FROM zones z JOIN sessions s ON s.id = z.session_id
+            WHERE z.kind = 'shelf' AND s.pose = 1 {where}
+            """,  # noqa: S608 - `where` is a fixed literal
+            params,
+        ).fetchall()
+        return {r["name"] for r in rows}
+
+    def zone_moved(self, zone: str, before_session: int, after_session: int) -> bool | None:
+        """Did a zone's polygon change between two sessions?
+
+        None when either session did not record its zones, which is the
+        truth about older databases and must not be read as 'unchanged'.
+        """
+        polygons = []
+        for session_id in (before_session, after_session):
+            row = self._conn.execute(
+                "SELECT polygon FROM zones WHERE session_id = ? AND name = ?",
+                (session_id, zone),
+            ).fetchone()
+            if row is None:
+                return None
+            polygons.append(json.loads(row["polygon"]))
+        return polygons[0] != polygons[1]
 
     def session_calibration(self, session_id: int) -> dict | None:
         """The floor calibration a session's positions were measured against.
@@ -366,7 +469,8 @@ class EventStore:
             SELECT s.*,
                    (SELECT COUNT(*) FROM visits    v WHERE v.session_id = s.id) AS visits,
                    (SELECT COUNT(*) FROM reaches   r WHERE r.session_id = s.id) AS reaches,
-                   (SELECT COUNT(*) FROM positions p WHERE p.session_id = s.id) AS positions
+                   (SELECT COUNT(*) FROM positions p WHERE p.session_id = s.id) AS positions,
+                   (SELECT COUNT(*) FROM zones     z WHERE z.session_id = s.id) AS zones
             FROM sessions s
             ORDER BY s.id DESC
             """
@@ -382,6 +486,26 @@ class EventStore:
             "SELECT DISTINCT session_id FROM reaches WHERE zone = ?"
             " ORDER BY session_id DESC",
             (zone,),
+        ).fetchall()
+        return [int(r["session_id"]) for r in rows]
+
+    def sessions_measuring(self, zone: str) -> list[int]:
+        """Sessions in which a shelf zone was measured, newest first.
+
+        Measured means either a reach was recorded, or the zone was drawn and
+        pose ran so that zero reaches is itself the measurement. This is what
+        lets `measure` compare a dead fixture against its fixed self, which is
+        the comparison the whole command exists for.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT session_id FROM reaches WHERE zone = ?
+            UNION
+            SELECT z.session_id FROM zones z JOIN sessions s ON s.id = z.session_id
+            WHERE z.name = ? AND z.kind = 'shelf' AND s.pose = 1
+            ORDER BY session_id DESC
+            """,
+            (zone, zone),
         ).fetchall()
         return [int(r["session_id"]) for r in rows]
 

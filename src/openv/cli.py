@@ -133,6 +133,10 @@ def _cmd_track(args: argparse.Namespace) -> int:
                 # Recorded with the session, so the positions below stay meaningful
                 # without the .floor.json that produced them sitting next to the .db.
                 calibration=floor_map.as_dict() if floor_map is not None else None,
+                # And the zones, so a shelf that records nothing is still known
+                # to have been watched, which is what makes zero a finding.
+                zones=zones,
+                pose=pose_estimator is not None,
             )
             print(f"db       {args.db} (session {session_id})")
 
@@ -1190,16 +1194,21 @@ def _cmd_sessions(args: argparse.Namespace) -> int:
 
     # ISO-8601 with an offset is 25 characters, so a narrower column silently
     # pushes every other one out of alignment.
+    # `zones` and `pose` say what a session could have measured, which is what
+    # makes an absence readable: zero reaches on a drawn shelf with pose on is
+    # a dead fixture, zero reaches with pose off is nothing.
     header = (
         f"{'id':>4}  {'started':<25}  {'visits':>7}{'reaches':>8}"
-        f"{'positions':>10}  source"
+        f"{'positions':>10}{'zones':>7}{'pose':>6}  source"
     )
     print(header)
     print("-" * len(header))
     for row in rows:
+        pose = {None: "?", 0: "off", 1: "on"}[row["pose"]]
         print(
             f"{row['id']:>4}  {row['started_at']:<25}  {row['visits']:>7}"
-            f"{row['reaches']:>8}{row['positions']:>10}  {row['source']}"
+            f"{row['reaches']:>8}{row['positions']:>10}{row['zones']:>7}{pose:>6}"
+            f"  {row['source']}"
         )
     return 0
 
@@ -1220,10 +1229,10 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         # that actually contain this zone is what makes the command usable, and
         # it names what it picked so the choice is never silent.
         if before is None or after is None:
-            candidates = store.sessions_with_reaches(args.zone)
+            candidates = store.sessions_measuring(args.zone)
             if len(candidates) < 2:
                 print(
-                    f"{args.zone} has reach data in "
+                    f"{args.zone} was measured in "
                     f"{len(candidates)} session{'' if len(candidates) == 1 else 's'}. "
                     f"Two are needed to measure a change.",
                     file=sys.stderr,
@@ -1238,7 +1247,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
 
     if change is None:
         print(
-            f"no reach data for {args.zone} in session {before} or "
+            f"{args.zone} was not measured in session {before} or "
             f"{after}, so there is nothing to compare"
         )
         return 1
@@ -1248,6 +1257,7 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         "worsened": "--",
         "indistinguishable": "  ",
         "not_enough_data": " ?",
+        "not_comparable": " x",
     }[change.verdict]
 
     print(f"{mark} {args.zone}: {change.verdict.replace('_', ' ')}")

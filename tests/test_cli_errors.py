@@ -61,7 +61,7 @@ def test_measure_on_a_zone_that_was_never_seen(tmp_path, capsys):
     error = capsys.readouterr().err
 
     assert code == 1
-    assert "reach data in 0 sessions" in error
+    assert "measured in 0 sessions" in error
     # Points at the command that would show what does exist.
     assert "openv sessions" in error
 

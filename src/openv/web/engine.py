@@ -132,6 +132,11 @@ class LiveEngine:
         self._findings: list[dict[str, Any]] = []
         self._started_at = time.time()
         self._session_id: int | None = None
+        # Set when zones change under a running session. The store then gets
+        # a fresh session on the next frame, because the console resets its
+        # own counts on a zone change and the persisted rows must follow the
+        # same rule rather than mixing two boundaries under one session id.
+        self._zones_changed = False
 
         self._zones = ZoneSet(zones=())
         if self.zones_path and self.zones_path.exists():
@@ -230,6 +235,7 @@ class LiveEngine:
             self._visits = None  # rebuilt on the next frame
             self._reaches = None
             self._renderer = None
+            self._zones_changed = True
         if self.zones_path:
             zones.save(self.zones_path)
 
@@ -271,17 +277,7 @@ class LiveEngine:
             from openv.store import EventStore
 
             store = EventStore(self.db_path)
-            session_id = store.start_session(
-                source=self.source_spec,
-                fps=fps,
-                width=self.width,
-                height=self.height,
-                calibration=(
-                    self._floor_map.as_dict() if self._floor_map is not None else None
-                ),
-            )
-            with self._lock:
-                self._session_id = session_id
+            self._open_session(store, fps)
 
         tracker = PersonTracker(fps=fps, algorithm="bytetrack")
         frame_index = 0
@@ -387,7 +383,29 @@ class LiveEngine:
         with self._lock:
             self._findings = payload
 
+    def _open_session(self, store, fps: float) -> int:
+        """Start a store session that records the zones it will be measured against."""
+        with self._lock:
+            zones = self._zones
+            self._zones_changed = False
+        session_id = store.start_session(
+            source=self.source_spec,
+            fps=fps,
+            width=self.width,
+            height=self.height,
+            calibration=(
+                self._floor_map.as_dict() if self._floor_map is not None else None
+            ),
+            zones=zones,
+            pose=self.pose_enabled,
+        )
+        with self._lock:
+            self._session_id = session_id
+        return session_id
+
     def _consume(self, result: FrameResult, frame: np.ndarray, fps: float, store) -> None:
+        if store is not None and self._zones_changed:
+            self._open_session(store, fps)
         with self._lock:
             zones = self._zones
             session_id = self._session_id

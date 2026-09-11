@@ -88,6 +88,7 @@ def _funnel_dict(funnel: ZoneFunnel) -> dict[str, Any]:
     return {
         "shelf_zone": funnel.shelf_zone,
         "floor_zone": funnel.floor_zone,
+        "paired_by": funnel.paired_by,
         "passed": funnel.passed,
         "stopped": funnel.stopped,
         "reached": funnel.reached,

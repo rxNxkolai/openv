@@ -20,6 +20,7 @@ import statistics
 from dataclasses import dataclass
 
 from openv.store import EventStore
+from openv.zones import Zone, ZoneSet
 
 # Below this many shoppers, a rate is noise. Reporting "0% reach rate" off three
 # shoppers as a finding would be worse than reporting nothing.
@@ -40,6 +41,11 @@ class ZoneFunnel:
     stopped: int
     reached: int
     mean_dwell_s: float
+    # How the floor zone was chosen: 'reachers' when learned from where
+    # reachers stood, 'geometry' when nobody reached and the nearest floor
+    # polygon had to stand in. It travels with the funnel because a number
+    # whose denominator was picked by a fallback should say so.
+    paired_by: str | None = None
 
     @property
     def stop_rate(self) -> float | None:
@@ -64,7 +70,7 @@ class Finding:
     """One thing worth telling a retailer, with the evidence attached."""
 
     zone: str
-    kind: str  # underperforming | low_stop_rate | healthy | insufficient_data
+    kind: str  # dead | underperforming | low_stop_rate | healthy | insufficient_data
     severity: str  # high | medium | low | none
     headline: str
     funnel: ZoneFunnel
@@ -110,7 +116,7 @@ class Change:
     zone: str
     before: ZoneFunnel
     after: ZoneFunnel
-    verdict: str  # improved | worsened | indistinguishable | not_enough_data
+    verdict: str  # improved | worsened | indistinguishable | not_enough_data | not_comparable
     reason: str
     delta: float | None = None
     p_value: float | None = None
@@ -157,13 +163,33 @@ def measure_change(
 ) -> Change | None:
     """Compare one shelf zone across two sessions.
 
-    Returns None if the zone has no reach data in either session, because
-    "changed from nothing to nothing" is not a measurement.
+    Returns None if the zone was not measured in either session, because
+    "changed from nothing to nothing" is not a measurement. A shelf that was
+    drawn, watched with pose on, and never reached **was** measured: zero is
+    the number, and comparing it against the fixed fixture is the point.
+
+    Refuses outright when the polygon moved between the sessions. The live
+    console already resets its counts on a zone change because numbers
+    gathered against different boundaries are not comparable; this is the
+    same rule applied where it has consequences, in the persisted store.
     """
     before = _funnel_for(store, zone, before_session)
     after = _funnel_for(store, zone, after_session)
     if before is None or after is None:
         return None
+
+    if store.zone_moved(zone, before_session, after_session):
+        return Change(
+            zone=zone,
+            before=before,
+            after=after,
+            verdict="not_comparable",
+            reason=(
+                f"the polygon for {zone} changed between session {before_session} "
+                f"and {after_session}, so the two measurements describe different "
+                "boundaries. Redraw it as it was, or start counting from here"
+            ),
+        )
 
     if not (before.has_confidence and after.has_confidence):
         thin = [
@@ -241,14 +267,28 @@ def analyze(
     session_id: int | None = None,
     stop_threshold_s: float = 2.0,
 ) -> StoreAnalysis:
-    """Compute the funnel for every shelf zone and rank what is worth acting on."""
+    """Compute the funnel for every shelf zone and rank what is worth acting on.
+
+    A shelf zone is in the analysis if it recorded a reach, or if it was drawn
+    in a session where pose ran and could have. The second case is the dead
+    fixture, and before zones were persisted it was the one shelf the product
+    could not mention: no reach rows meant no row at all, so the worse a
+    fixture performed the less was said about it.
+    """
     pairs = store.shelf_floor_pairs(session_id)
     floor_rows = {r["zone"]: r for r in store.zone_summary(session_id)}
     reach_rows = {r["zone"]: r for r in store.reach_summary(session_id)}
+    drawn = _zones_for(store, session_id)
 
     funnels: list[ZoneFunnel] = []
-    for shelf_zone in sorted(reach_rows) or ():
+    for shelf_zone in sorted(set(reach_rows) | store.shelf_zones_measured(session_id)):
+        paired_by: str | None = None
         floor_zone = pairs.get(shelf_zone)
+        if floor_zone is not None:
+            paired_by = "reachers"
+        elif drawn is not None:
+            floor_zone = _nearest_floor_zone(shelf_zone, drawn)
+            paired_by = "geometry" if floor_zone is not None else None
         floor = floor_rows.get(floor_zone) if floor_zone else None
 
         passed = int(floor["shoppers"]) if floor else 0
@@ -258,7 +298,8 @@ def analyze(
             if floor_zone
             else 0
         )
-        reached = int(reach_rows[shelf_zone]["shoppers"])
+        reach = reach_rows.get(shelf_zone)
+        reached = int(reach["shoppers"]) if reach is not None else 0
 
         funnels.append(
             ZoneFunnel(
@@ -268,6 +309,7 @@ def analyze(
                 stopped=stopped,
                 reached=reached,
                 mean_dwell_s=mean_dwell,
+                paired_by=paired_by,
             )
         )
 
@@ -299,6 +341,41 @@ def analyze(
     )
 
 
+def _zones_for(store: EventStore, session_id: int | None) -> ZoneSet | None:
+    """The zone set to pair against when nobody reached.
+
+    For a whole-store analysis the latest session's zones stand for the
+    store, which is right when the layout is stable and stated here because
+    it is an assumption.
+    """
+    if session_id is None:
+        session_id = store.latest_session_id()
+    return store.session_zones(session_id) if session_id is not None else None
+
+
+def _nearest_floor_zone(shelf_name: str, zones: ZoneSet) -> str | None:
+    """The floor zone a shelf most plausibly faces, from the drawing alone.
+
+    Only used when no reacher ever stood anywhere, which is exactly the dead
+    fixture. The pairing learned from reachers is better evidence and takes
+    over the moment a reach is recorded. Nearest is measured from the shelf
+    polygon's centroid to each floor polygon, signed so that a centroid
+    inside a floor zone beats one merely close to it.
+    """
+    shelf = next((z for z in zones.shelf if z.name == shelf_name), None)
+    if shelf is None or not len(zones.floor):
+        return None
+    cx = sum(x for x, _ in shelf.polygon) / len(shelf.polygon)
+    cy = sum(y for _, y in shelf.polygon) / len(shelf.polygon)
+    return max(zones.floor, key=lambda z: _signed_distance(z, (cx, cy))).name
+
+
+def _signed_distance(zone: Zone, point: tuple[float, float]) -> float:
+    import cv2
+
+    return float(cv2.pointPolygonTest(zone.contour, (float(point[0]), float(point[1])), True))
+
+
 def _assess(funnel: ZoneFunnel, median_reach: float | None) -> Finding:
     if not funnel.has_confidence:
         return Finding(
@@ -309,6 +386,23 @@ def _assess(funnel: ZoneFunnel, median_reach: float | None) -> Finding:
                 f"{funnel.shelf_zone}: only {funnel.passed} "
                 f"shopper{'' if funnel.passed == 1 else 's'} observed, "
                 f"below the {MIN_SHOPPERS_FOR_CONFIDENCE} needed to call a rate"
+            ),
+            funnel=funnel,
+            benchmark_reach_rate=median_reach,
+        )
+
+    # Nobody reached at all. This does not need a benchmark to be a finding:
+    # zero engagement from a confident number of shoppers is the most
+    # actionable thing a merchandiser can be told about a fixture, and it is
+    # reported before the median so a store with one shelf still hears it.
+    if funnel.reached == 0:
+        return Finding(
+            zone=funnel.shelf_zone,
+            kind="dead",
+            severity="high" if funnel.passed >= MIN_SHOPPERS_FOR_CONFIDENCE * 2 else "medium",
+            headline=(
+                f"{funnel.shelf_zone}: {funnel.passed} shoppers walked past and not "
+                f"one reached. A dead fixture"
             ),
             funnel=funnel,
             benchmark_reach_rate=median_reach,
