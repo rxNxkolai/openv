@@ -651,6 +651,7 @@ def _print_summary(db_path: str, session_id: int | None) -> None:
     with EventStore(db_path) as store:
         rows = store.zone_summary(session_id)
         reaches = store.reach_summary(session_id)
+        measured = store.shelf_zones_measured(session_id)
 
     if not rows and not reaches:
         print("no zone visits recorded")
@@ -685,8 +686,14 @@ def _print_summary(db_path: str, session_id: int | None) -> None:
                 f"{r['mean_hold_s']:>11.2f}s{r['max_hold_s']:>7.1f}s"
             )
         print("\na reach is a hand inside a shelf zone: engagement, not just presence.")
+    elif rows and measured:
+        # The session recorded its shelf zones and that pose ran, so zero reach
+        # rows is the measurement, not a gap in it.
+        names = ", ".join(sorted(measured))
+        print(f"\nno reaches recorded on {names}, with pose on. Nobody reached, or")
+        print("--min-arm-extension is too strict. `openv analyze` reports a dead fixture.")
     elif rows:
-        # The store holds visits and reaches, not the zone set, so zero reach rows
+        # A session recorded before zones were persisted, or one with pose off,
         # cannot distinguish "no shelf zone drawn" from "no hand entered one".
         # Claiming the first is how you get sent off to redraw zones that are fine.
         print("\nno reaches recorded. Either no zone of kind 'shelf' was drawn over")
