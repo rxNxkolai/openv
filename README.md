@@ -8,6 +8,10 @@ wrong at the shelf and drafts the fix: planogram changes, packaging briefs, ad v
 
 The cameras are the sensor. The agent is the product.
 
+![OpenV on the grocery sample: two shelf zones, one aisle zone, a tracked shopper reaching into the left shelf](docs/grocery-tracked.jpg)
+
+*The bundled grocery clip with zones drawn and pose on. Shelf zones are tested against wrists, the aisle against foot points. The hand is inside `left-shelf` here and the reach is recorded once it ends, 0.6 seconds later. Same renderer as `openv track --out`.*
+
 ## Status
 
 **M0: detection and tracking.** Video in, people detected, stable track IDs out.
