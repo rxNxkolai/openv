@@ -196,6 +196,24 @@ measured the same way on the same day.
 Below 30 observed shoppers a rate is not reported as a rate. "0% reach" off three
 shoppers is a lie dressed as data.
 
+**A shelf nobody reaches is reported, not skipped.** The event store records the
+zone set every session was measured against, so a shelf zone that was drawn,
+watched with `--pose` on, and never reached is a dead fixture rather than a
+missing row. It ranks high. Zero engagement from a confident number of shoppers
+is the most actionable thing a merchandiser can be told, and it needs no
+benchmark to be true. With pose off, zero reaches is a setting and is not
+reported as anything.
+
+Measured on `people-walking.mp4`, tiled, pose on: 95 shoppers crossed the shelf
+zone, none reached, and `analyze` reports it as dead and ranks it high. Before
+the zone set was recorded, the same run printed "no shelf zones with reach data
+yet".
+
+A dead shelf has no reachers to learn its aisle from, so it is paired to the
+nearest floor zone in the drawing instead, and the funnel says so
+(`paired_by: geometry`). The moment a reach is recorded, where people actually
+stood takes over.
+
 ### The agent
 
 ```bash
@@ -211,7 +229,7 @@ under:
   `approved`, because approval is a human decision and that is the liability gate.
 
 OpenV knows zones, not products, so recommendations cover placement, shelf height,
-facing count, and signage — not "move SKU-204". The system prompt forbids inventing
+facing count, and signage, not "move SKU-204". The system prompt forbids inventing
 SKUs or prices to cover that gap.
 
 If credentials are missing, `analyze` is unaffected: it needs no model at all.
@@ -280,6 +298,7 @@ answer is a verdict rather than a delta:
 | `improved` / `worsened` | larger than chance would produce at this sample size |
 | `indistinguishable` | a real answer, and usually the correct one early on |
 | `not_enough_data` | no rate exists on one side, so there is nothing to compare |
+| `not_comparable` | the zone polygon moved between the sessions, so the two numbers describe different boundaries |
 
 Measured: 30 shoppers before and after, 5 reaches then 7. That is a 40% relative
 improvement if you are careless. OpenV calls it `indistinguishable` at p = 0.52
@@ -289,6 +308,14 @@ The test is a pooled two-proportion z-test at p < 0.05. When the normal
 approximation behind it stops applying, which happens with plenty of traffic but
 almost no reaches, it returns `not_enough_data` rather than a number that looks
 like the others and is not comparable to them.
+
+Each session records the polygons it was measured against, so `measure` can
+tell that a zone was redrawn between two runs and refuses to compare across
+it. The live console has always reset its counts on a zone change for the same
+reason; this is that rule applied where it has consequences. It also means a
+dead fixture compares against its fix: zero reaches on a watched shelf is a
+measurement, not a missing row, and a `.db` reads without the zones file that
+produced it.
 
 ### Asking questions
 

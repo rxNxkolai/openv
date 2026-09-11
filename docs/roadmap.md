@@ -86,6 +86,11 @@ as a rate.
 Recommendations are stored `proposed`. No code path sets `approved`, because
 approval is the liability gate.
 
+A shelf nobody reaches is a `dead` finding, ranked high. It used to be the one
+shelf the product could not mention, because zero reaches meant zero rows;
+the store now records each session's zone set and whether pose ran, so an
+absence is readable as a measurement.
+
 ### M4, the live path
 
 Camera in, overlay and running numbers in the browser, writing to the same event
@@ -246,6 +251,11 @@ fixed still gets its success announced rather than silently dropping out.
 
 Delivery is a plain webhook in the format Slack, Discord, Teams and Google Chat
 all accept, so those are configuration rather than code.
+
+`measure` refuses to compare across a redrawn polygon (`not_comparable`),
+because the sessions record the zones they were measured against. Moving the
+fixture and then the zone is the natural workflow, and it used to yield a
+confident p-value over two different boundaries.
 
 **Still to build for M7:** approval routing, ticket creation, and the scheduling
 itself.
