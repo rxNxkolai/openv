@@ -1,7 +1,7 @@
 [project]
 name = "openv"
 version = "0.1.0"
-description = "Agentic shopper-behavior intelligence on existing store cameras"
+description = "Shopper-behavior intelligence on existing store cameras: zones, reaches, products through the store map, and an aggregate export"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "torch>=2.4",

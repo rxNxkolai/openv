@@ -14,10 +14,11 @@ a retailer will argue with the numbers before they argue with the advice.
 touches a merchandising system. Human-in-the-loop is the liability boundary the
 plan's risk register calls for, and it is structural here, not a setting.
 
-What it cannot do, honestly: Patron does not know SKUs. It knows zones. So the
-recommendation is about placement, facing, and shelf position, not "move SKU-204".
-That is a hardware limitation (see CLAUDE.md constraint 3), not a prompt problem,
-and the system prompt forbids inventing product names to paper over it.
+What it cannot do, honestly: OpenV does not see products. It measures zones. What
+is on a shelf is known only when the retailer's store map says so (`storemap.py`),
+and then it arrives in the prompt as `on_this_shelf`. Without a map the
+recommendation is about placement, facing, and shelf position, not "move SKU-204",
+and either way the system prompt forbids inventing a product to paper over a gap.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from openv.analysis import Finding, StoreAnalysis
 MODEL = "claude-opus-5"
 
 SYSTEM = """\
-You are the analysis layer of Patron, a shopper-behavior system that watches a \
+You are the analysis layer of OpenV, a shopper-behavior system that watches a \
 store's security cameras and advises on merchandising.
 
 You receive computed funnel measurements for zones of a store. Your job is to turn \
@@ -41,10 +42,14 @@ Rules you do not break:
 
 1. Every number you cite must come from the data given to you. Do not compute new \
 numbers, do not estimate, and do not introduce figures that are not present.
-2. Patron measures zones, not products. You do not know what is on the shelf, what \
-it costs, or what brand it is. Never invent a SKU, product name, brand, or price. \
-Recommend changes to placement, shelf height, facing count, signage position, and \
-adjacency, which are the things zone data can support.
+2. OpenV measures zones, not products. The cameras cannot see what is on a shelf. \
+A finding may carry `on_this_shelf`, which is the retailer's own store map for that \
+zone, and those are the only products that exist for you. Never invent a SKU, product \
+name, brand, or price. When a zone holds more than one item, its numbers belong to the \
+zone as a whole: do not attribute them to any single item or brand, and do not split \
+them by facing count. With no `on_this_shelf`, recommend changes to placement, shelf \
+height, facing count, signage position, and adjacency, which are the things zone data \
+can support.
 3. If a finding is marked as low confidence or insufficient data, say so plainly in \
 the recommendation and recommend collecting more observation rather than acting.
 4. One action per finding. A list of five things to try is not a recommendation, it \
@@ -139,11 +144,27 @@ def _finding_payload(finding: Finding) -> dict:
     }
 
 
-def build_prompt(analysis: StoreAnalysis) -> str:
+def build_prompt(
+    analysis: StoreAnalysis, shelf_contents: dict[str, list[dict]] | None = None
+) -> str:
+    """The user turn: findings, and what the store map says is on each shelf.
+
+    `shelf_contents` maps a shelf zone to the retailer's items on it. It is
+    attached per finding so the model reads a product next to the only numbers
+    it may be mentioned with, and it is absent entirely when no map exists.
+    """
+    findings = []
+    for finding in analysis.findings:
+        payload = _finding_payload(finding)
+        items = (shelf_contents or {}).get(finding.funnel.shelf_zone)
+        if items:
+            payload["on_this_shelf"] = items
+        findings.append(payload)
+
     payload = {
         "store_median_reach_rate": analysis.median_reach_rate,
         "total_shoppers_observed": analysis.total_shoppers,
-        "findings": [_finding_payload(f) for f in analysis.findings],
+        "findings": findings,
         "measurement_caveats": [
             "Shopper counts are an upper bound: tracking can assign a new id to a "
             "shopper who was occluded and reacquired.",
@@ -164,6 +185,7 @@ def advise(
     analysis: StoreAnalysis,
     model: str = MODEL,
     effort: str = "high",
+    shelf_contents: dict[str, list[dict]] | None = None,
 ) -> list[Recommendation]:
     """Ask the model for recommendations over already-computed findings.
 
@@ -192,7 +214,7 @@ def advise(
             "effort": effort,
             "format": {"type": "json_schema", "schema": SCHEMA},
         },
-        "messages": [{"role": "user", "content": build_prompt(analysis)}],
+        "messages": [{"role": "user", "content": build_prompt(analysis, shelf_contents)}],
     }
 
     # Note the TypeError: with no credentials at all the SDK raises it from header

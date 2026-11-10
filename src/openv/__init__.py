@@ -1,4 +1,4 @@
-"""Patron: agentic shopper-behavior intelligence on existing store cameras."""
+"""OpenV: agentic shopper-behavior intelligence on existing store cameras."""
 
 from openv.pipeline import Pipeline
 from openv.types import Box, FrameResult, TrackedPerson

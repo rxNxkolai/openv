@@ -18,11 +18,14 @@ models/
 data/*
 out/
 
-# Zone polygons and floor calibrations are small text config, not footage, and
+# Zone polygons, floor calibrations and store maps are small text config, not footage, and
 # they are the other half of how the test fixtures were produced. Without them
 # the fixtures cannot be regenerated or argued with.
 !data/*.zones.json
 !data/*.floor.json
+# Store maps are the retailer's shelf data for a set of zones: what is on each
+# fixture and where it stands on the plan. Store data, not shopper data.
+!data/*.map.json
 
 # Env
 .env

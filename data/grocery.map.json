@@ -1,0 +1,28 @@
+{
+  "store": {
+    "id": "demo-grocery",
+    "name": "Demo grocery, aisle 6",
+    "units": "m",
+    "outline": [[0, 0], [6, 0], [6, 10], [0, 10]]
+  },
+  "fixtures": [
+    {
+      "zone": "left-shelf",
+      "label": "Aisle 6 left",
+      "plan": [[0.4, 1], [1.1, 1], [1.1, 9], [0.4, 9]],
+      "products": [
+        {"sku": "100234", "product": "Oat cereal 500g", "brand": "Northfield", "category": "cereal", "facings": 6, "level": "eye"},
+        {"sku": "100241", "product": "Bran flakes 750g", "brand": "Northfield", "category": "cereal", "facings": 4, "level": "mid"}
+      ]
+    },
+    {
+      "zone": "right-shelf",
+      "label": "Aisle 6 right",
+      "plan": [[4.9, 1], [5.6, 1], [5.6, 9], [4.9, 9]],
+      "products": [
+        {"sku": "200511", "product": "Granola clusters 400g", "brand": "Harrow & Pike", "category": "cereal", "facings": 5, "level": "eye"},
+        {"sku": "200618", "product": "Porridge oats 1kg", "brand": "Oatwright", "category": "cereal", "facings": 3, "level": "bottom"}
+      ]
+    }
+  ]
+}

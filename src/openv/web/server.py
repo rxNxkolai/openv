@@ -20,7 +20,7 @@ STATIC = Path(__file__).parent / "static"
 
 
 def create_app(engine: LiveEngine) -> FastAPI:
-    app = FastAPI(title="Patron live", docs_url=None, redoc_url=None)
+    app = FastAPI(title="OpenV live", docs_url=None, redoc_url=None)
 
     @app.on_event("startup")
     def _start() -> None:

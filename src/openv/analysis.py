@@ -245,7 +245,12 @@ def measure_change(
         before=before,
         after=after,
         verdict="improved" if delta > 0 else "worsened",
-        reason=f"larger than chance would produce at this sample size (p = {p_value:.3f})",
+        reason=(
+            "larger than chance would produce at this sample size "
+            # Three decimals of a very small p prints as 0.000, which reads as
+            # "impossible" and is not a number anybody computed.
+            + ("(p < 0.001)" if p_value < 0.001 else f"(p = {p_value:.3f})")
+        ),
         delta=delta,
         p_value=p_value,
     )
@@ -325,7 +330,7 @@ def analyze(
 
     findings = tuple(
         sorted(
-            (_assess(f, median_reach) for f in funnels),
+            (assess(f, median_reach) for f in funnels),
             key=lambda f: (
                 {"high": 0, "medium": 1, "low": 2, "none": 3}[f.severity],
                 -f.funnel.passed,
@@ -376,7 +381,7 @@ def _signed_distance(zone: Zone, point: tuple[float, float]) -> float:
     return float(cv2.pointPolygonTest(zone.contour, (float(point[0]), float(point[1])), True))
 
 
-def _assess(funnel: ZoneFunnel, median_reach: float | None) -> Finding:
+def assess(funnel: ZoneFunnel, median_reach: float | None) -> Finding:
     if not funnel.has_confidence:
         return Finding(
             zone=funnel.shelf_zone,

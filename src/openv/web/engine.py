@@ -75,8 +75,12 @@ class LiveEngine:
         min_arm_extension: float = DEFAULT_MIN_ARM_EXTENSION,
         floor_path: str | Path | None = None,
         position_interval: float = 1.0,
+        store_map=None,
     ) -> None:
         self.source_spec = source
+        # What is on the shelves, recorded with each session the console opens.
+        # Dropped the moment zones are redrawn in the browser: see _open_session.
+        self._store_map = store_map
         self.width = width
         self.height = height
         self.zones_path = Path(zones_path) if zones_path else None
@@ -398,10 +402,23 @@ class LiveEngine:
             ),
             zones=zones,
             pose=self.pose_enabled,
+            store_map=self._map_for(zones),
         )
         with self._lock:
             self._session_id = session_id
         return session_id
+
+    def _map_for(self, zones):
+        """The store map, if it still fits the zones this session is opening with.
+
+        Zones can be redrawn in the browser mid-run, and a map that named a
+        zone which no longer exists would attach products to nothing. A map
+        that has stopped fitting is left off the new session rather than
+        recorded wrong, and the session then simply has zone numbers.
+        """
+        if self._store_map is None or zones is None:
+            return None
+        return None if self._store_map.problems(zones) else self._store_map
 
     def _consume(self, result: FrameResult, frame: np.ndarray, fps: float, store) -> None:
         if store is not None and self._zones_changed:
