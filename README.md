@@ -1,23 +1,91 @@
 # OpenV
 
-Agentic shopper-behavior intelligence on existing store cameras.
+Shopper intelligence that runs on the cameras a store already has.
 
-OpenV reads a store's existing security camera feeds, turns shopper behavior into a
-structured event stream, and runs an agent over that stream that diagnoses what is going
-wrong at the shelf and drafts the fix: planogram changes, packaging briefs, ad variants.
+OpenV reads existing security camera feeds and turns what shoppers do into a
+structured, anonymous event stream: where they walk, where they stop, how long
+they stay, and which shelves they reach into. It joins those events to the
+store's own map of what sits on each shelf, so a number about a place becomes a
+number about a product and a brand. An agent then explains what is going wrong
+at the shelf and drafts the fix, and an aggregate export carries the same
+numbers to the retailer and to the brands on that shelf.
 
-The cameras are the sensor. The agent is the product.
+The cameras are the sensor. The store map is the retailer's. The agent is the product.
 
 ![OpenV on the grocery sample: two shelf zones, one aisle zone, a tracked shopper reaching into the left shelf](docs/grocery-tracked.jpg)
 
 *The bundled grocery clip with zones drawn and pose on. Shelf zones are tested against wrists, the aisle against foot points. The hand is inside `left-shelf` here and the reach is recorded once it ends, 0.6 seconds later. Same renderer as `openv track --out`.*
 
+## What it measures
+
+| Signal | How it is measured | Where |
+|---|---|---|
+| Traffic | people detected and tracked per camera, counted per zone | `openv track` |
+| Path and speed | foot points projected onto the store floor plan, sampled at 1Hz | `--floor` |
+| Dwell and stops | one continuous stay per shopper per zone, debounced | `--zones` |
+| Reaches | a wrist inside a shelf zone with the arm extended | `--pose` |
+| Funnel | passed, stopped, reached per shelf, ranked against the store's own median | `openv analyze` |
+| Products and brands | the zone numbers, joined to the retailer's store map | `openv export` |
+| Whether a change worked | one zone across two sessions, as a verdict and not a delta | `openv measure` |
+| One brand across stores | export files pooled, every store kept visible | `openv rollup` |
+
+## What it will not collect
+
+OpenV stops at behaviour. The items below are left out by construction, and
+`tests/test_privacy_posture.py` fails if one of them appears in the code.
+
+- **No faces and no biometric identifier.** No face embedding is computed, stored or sent.
+- **No demographic guess and no emotion inference.** Contested science, and prohibited ground under the EU AI Act.
+- **No identity across visits.** A track id lives for one session and dies when the shopper leaves frame. Nothing links Monday's shopper to Tuesday's, or one store's to another's.
+- **No retained video.** Frames exist in the processing buffer and nowhere else.
+- **No product recognition by camera.** A ceiling camera cannot read a label reliably. Products come from the store map.
+
+This is the commercial argument as much as the legal one. The export is a file
+a buyer's counsel can read end to end: aggregate counts per zone, and a list of
+what the pipeline never produces. See [CLAUDE.md](CLAUDE.md) for the caselaw
+and the precise claims.
+
 ## Status
 
-**M0: detection and tracking.** Video in, people detected, stable track IDs out.
-**M1: zones and events.** Named store areas, visit records with dwell, per-zone funnel.
-**M2: reach detection.** Pose estimation, hands entering shelf zones, engagement vs presence.
-**M3: analysis and agent.** Ranked funnel findings, then recommendations over them.
+| Phase | Scope | State |
+|---|---|---|
+| M0 | Detection and tracking | done |
+| M1 | Zones, visits, dwell, event store | done |
+| M2 | Pose and reach detection | done, specificity validated, sensitivity open |
+| M3 | Analysis and agent | done, agent path unrun |
+| M4 | Live camera, browser console | done in software, unrun on a real fixed camera |
+| M5 | Floor coordinates, plan view | done bar multi-camera |
+| M6 | Agent tools and chat | built and tested against a scripted client, unrun live |
+| M7 | Re-measurement, digest, webhook | done |
+| M8 | Store map, product and brand numbers, export | done on synthetic data, unrun with a retailer's planogram |
+| M9 | Multi-store | rollup across export files done, shared database not started |
+
+What is still open is not code: a real fixed camera in a store, a live run of
+the agent with credentials, footage of a reach with the whole body in frame,
+and a retailer's own planogram. [docs/roadmap.md](docs/roadmap.md) has the
+detail and the order.
+
+## Try it with no camera
+
+Everything above the detector is deterministic code over an event store, so it
+runs without a camera, a GPU or an API key. This writes two synthetic stores:
+
+```bash
+uv sync
+uv run openv demo-store
+```
+
+Then read them the way a real session is read:
+
+```bash
+uv run openv analyze --db out/demo/store-014.db
+uv run openv measure shelf-endcap --db out/demo/store-014.db
+uv run openv export --db out/demo/store-014.db --session 1
+uv run openv planview --db out/demo/store-014.db --session 1 --out out/demo/plan.svg
+```
+
+The demo numbers are invented and labelled `synthetic` in the store. They show
+what the commands say about a store shaped like that one, and nothing else.
 
 ## Quickstart
 
@@ -70,6 +138,7 @@ number meaningless against the clock the viewer is watching.
 | `--source` | `webcam:N`, or a video file to replay |
 | `--pose` | enable reach detection on shelf zones |
 | `--floor` | floor.json, adds the plan view and records positions |
+| `--map` | store map JSON, recorded with the session so reaches read as products |
 | `--db PATH` | event store for the session (default `out/openv.db`) |
 | `--no-db` | do not persist; numbers vanish on exit |
 | `--no-loop` | stop at the end of a video file instead of rewinding |
@@ -232,9 +301,12 @@ under:
 - **It never executes.** Output is stored with status `proposed`. No code path sets
   `approved`, because approval is a human decision and that is the liability gate.
 
-OpenV knows zones, not products, so recommendations cover placement, shelf height,
-facing count, and signage, not "move SKU-204". The system prompt forbids inventing
-SKUs or prices to cover that gap.
+OpenV measures zones, and the cameras cannot see what is on a shelf. With no
+store map, recommendations cover placement, shelf height, facing count, and
+signage, not "move SKU-204". With one, each finding carries the retailer's own
+list of what is on that shelf, and the advice can name those items and no
+others. The system prompt forbids inventing a SKU, brand or price in both cases,
+and forbids giving a shared zone's numbers to one of the items in it.
 
 If credentials are missing, `analyze` is unaffected: it needs no model at all.
 
@@ -459,6 +531,7 @@ high and reaches are being missed.
 | `--slice PX` | tiled inference, for wide or high camera mounts |
 | `--tracker NAME` | `bytetrack` (default), `botsort`, `ocsort`, `sort` |
 | `--min-arm-extension` | reach threshold in shoulder widths, default 2.5, 0 disables |
+| `--map PATH` | store map JSON, recorded with the session |
 | `--no-trace` | turn off the path trails |
 | `--no-half` | disable fp16 |
 
@@ -582,6 +655,212 @@ above the ankle does, which is the foot-point rule made visible.
 This is the layer a multi-camera bird's-eye view sits on: several cameras
 sharing one floor coordinate space.
 
+## Store map and product numbers (M8)
+
+OpenV measures zones. The retailer already knows what is on every shelf: that is
+what a planogram is. A store map is that knowledge in one small file, and
+joining it to the zone numbers gives product and brand numbers with no product
+recognition and no new hardware.
+
+```json
+{
+  "store": {"id": "store-014", "name": "Riverside", "units": "m",
+            "outline": [[0, 0], [16, 0], [16, 11], [0, 11]]},
+  "fixtures": [
+    {"zone": "shelf-cereal", "label": "Aisle 6, cereal",
+     "plan": [[1, 6], [2, 6], [2, 10], [1, 10]],
+     "products": [
+       {"sku": "100234", "product": "Oat cereal 500g", "brand": "Northfield",
+        "category": "cereal", "facings": 6, "level": "eye"}
+     ]}
+  ]
+}
+```
+
+`zone` names a shelf zone from the zones file. `plan` and `outline` are optional
+and use the same floor units a `floor.json` calibrates to. This is store data,
+not shopper data, and the privacy posture is untouched by it.
+
+Check a map against the zones before recording with it. A fixture that points
+at a zone which does not exist would otherwise show up an hour later as a
+product nobody touched:
+
+```bash
+uv run openv storemap data/grocery.map.json --zones data/grocery.zones.json
+```
+
+Then record with it:
+
+```bash
+uv run openv track data/grocery-store.mp4 --zones data/grocery.zones.json \
+  --map data/grocery.map.json --db out/openv.db --pose
+```
+
+**The map is recorded with the session**, the same way the zones are. Planograms
+are reset every few weeks, so "what was on that shelf" is a fact about a
+session. Last month's reaches are read against last month's map, and a `.db`
+needs no file beside it to be read.
+
+A session captured without a map can have one recorded afterwards, checked
+against the zones that session itself recorded:
+
+```bash
+uv run openv storemap data/grocery.map.json --attach --db out/openv.db
+```
+
+It refuses to overwrite a map without `--replace`.
+
+### The one rule
+
+**A number belongs to a brand only where the brand has the zone to itself.**
+
+A reach lands in a zone. If the zone holds one brand, every reach there was a
+reach for that brand. If it holds three, each reach was for one of the three and
+the data does not say which. Splitting the zone's reaches by share of facings
+would give every brand a tidy number, and every one of those numbers would be an
+assumption about shoppers presented as a measurement of them. It is also the
+exact assumption a brand pays to have tested. So a shared zone is reported as
+shared, and the brand gets no number there.
+
+On the synthetic demo store:
+
+<!-- demo-export -->
+```
+Riverside  (store store-014, session 1, 2026-11-10T20:02:24+00:00)
+shoppers observed 370, store median reach 9%
+
+   brand                  facings  passed  stopped  reached       reach  measured on
+------------------------------------------------------------------------------------
+!! Tallow Lane                 12     140       27        0          0%  shelf-endcap
+ ! Harrow & Pike               12     110       86        8          7%  shelf-snacks
+   Northfield                  13     120       74       44         37%  shelf-cereal
+ - Oatwright                    3                             no number  shared: shelf-oats
+
+   category               facings  passed  stopped  reached       reach  measured on
+------------------------------------------------------------------------------------
+!! snacks                      24     250      113        8          3%  shelf-snacks, shelf-endcap
+   cereal                      16     120       74       48         40%  shelf-cereal, shelf-oats
+
+   shelf zone              passed  reached       reach  on it
+-------------------------------------------------------------
+!! shelf-endcap               140        0          0%  Tallow Lane
+ ! shelf-oats                 120       13         11%  Northfield, Oatwright
+ ! shelf-snacks               110        8          7%  Harrow & Pike
+   shelf-cereal               120       44         37%  Northfield
+```
+
+Three things in that table are the design:
+
+- **Oatwright has no number.** It shares `shelf-oats` with Northfield. Thirteen
+  shoppers reached into that zone and nothing says whose product they wanted. A
+  zone drawn over its section alone would measure it.
+- **Northfield's 44 does not include any of those 13**, although Northfield is
+  in `shelf-oats` too. Its facings there are counted as a fact about the shelf.
+  Its reaches there are not counted at all.
+- **Cereal is measured over both zones**, with each shopper counted once.
+  Shared between brands is not shared for the category.
+
+That makes zone granularity the granularity of product insight. One polygon over
+a whole bay answers bay questions. One polygon per section answers section
+questions.
+
+The same rule holds one level down: an item is measured only when its zone holds
+nothing else. And a mapped fixture that was not watched with pose on is reported
+as not measured, never as untouched.
+
+### The plan
+
+```bash
+uv run openv planview --db out/openv.db --out out/plan.svg
+```
+
+![The synthetic demo store on its floor plan: fixtures coloured by finding, foot traffic underneath](docs/plan-example.svg)
+
+*The synthetic demo store. Fixtures are coloured by their finding, and the blue
+layer is foot traffic from recorded floor positions. The drawing is an SVG built
+from aggregates: no camera pixels, and no track behind any cell.*
+
+Fixtures need a `plan` polygon to be drawn, and the traffic layer needs a
+session recorded with `--floor`.
+
+## The export
+
+```bash
+uv run openv export --db out/openv.db --out out/store-014.json
+uv run openv export --db out/openv.db --brand "Northfield" --out out/northfield.json
+```
+
+This is the one file that leaves the store for somebody else, so "anonymised"
+has to be a property of the bytes. It is built from aggregates only, there is
+no code path from a track id, a position or a frame to it, and a test walks
+every key of the output to hold it to that.
+
+**What is in it:** zones, the retailer's own product data for those zones, and
+counts of shoppers who passed, stopped and reached, for one session of one
+store. Every rate is the guarded rate the rest of the system uses, so a row
+with fewer than 30 shoppers carries its counts and a stated refusal, never a
+percentage.
+
+**What every file states about itself:**
+
+```json
+"privacy": {
+  "unit": "aggregate counts per zone, for one session of one store",
+  "min_shoppers_for_a_rate": 30,
+  "excludes": [
+    "no video, frames or stills",
+    "no track identifiers, and no row per shopper",
+    "no individual positions or paths",
+    "no faces and no biometric identifier of any kind",
+    "no demographic inference and no emotion inference",
+    "no link between a shopper in one session and the same shopper in another"
+  ]
+}
+```
+
+`--brand` narrows the file to one brand: the zones it is in, its own items, and
+its category as the benchmark. Other brands are counted and never named. That
+narrowing is commercial confidentiality between a retailer and its suppliers.
+Shopper privacy is identical in both files. The retailer decides what a brand is
+shown, and this is the narrow default.
+
+The agent reads products through the same layer. `openv ask` has two more
+tools, `list_products` and `get_brand`, and they are its only source of a
+product or brand name. A brand with no number comes back with the reason and no
+counts to divide.
+
+## Across stores (M9)
+
+A retailer reads one store. A brand buys coverage: the same question asked of
+every store its product is in.
+
+```bash
+uv run openv rollup out/store-014.json out/store-022.json
+```
+
+```
+2 sessions from 2 stores: store-014, store-022
+
+Tallow Lane: passed 280 -> stopped 57 -> reached 23, reach 8%  (measured at 2 of 2)
+    store-014 #1            passed   140  reached    0  reach         0%  dead
+    store-022 #1            passed   140  reached   23  reach        16%  healthy
+```
+
+It reads export files and nothing else, so it runs wherever those files are and
+needs no access to any store's database, footage or cameras. Three refusals:
+
+- **The same session twice is an error.** Two copies of one file would double
+  that store and look like traffic.
+- **A store with no number adds nothing to the pool.** It is listed as
+  contributing nothing, not dropped and not estimated.
+- **Every store stays beside the total.** The pooled 8% above is two stores
+  that disagree completely, and the two rows say so.
+
+Nothing links a shopper between two files. Someone who shops at two stores, or
+at one store on two days, is counted in each. That is the design.
+
+`--by category` groups on category instead.
+
 ## Stack
 
 | Layer | Library | License |
@@ -590,6 +869,9 @@ sharing one floor coordinate space.
 | Tracking | roboflow/trackers (ByteTrack, BoT-SORT, OC-SORT, SORT) | Apache 2.0 |
 | Tiling, annotation | supervision | MIT |
 | Video IO | OpenCV | Apache 2.0 |
+| Pose | MediaPipe | Apache 2.0 |
+| Live console | FastAPI, uvicorn | MIT, BSD-3-Clause |
+| Agent | Anthropic SDK | MIT |
 
 RF-DETR's XLarge and 2XLarge checkpoints ship under Roboflow's PML 1.0, not Apache 2.0,
 and are deliberately not exposed.

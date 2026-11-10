@@ -65,6 +65,11 @@ Traffic, path, dwell, zone interactions and the pass-by to pickup funnel are bui
 and are where the value is. SKU-level identification and gaze are not reliable from a
 ceiling camera and are deliberately out of scope until Phase 3 hardware.
 
+Products are known through the retailer's store map (`storemap.py`), never through
+vision. That is not a workaround for the hardware limit, it is the better source: the
+retailer's planogram is the authority on what is on a shelf, and a camera would only be
+guessing at what they already know.
+
 ## Architecture seam
 
 `pipeline.py` yields a normalized `FrameResult` stream. Everything downstream (zones,
@@ -108,6 +113,14 @@ implementation detail.
 - **M3** analysis + agent, diagnosis and recommendation  (done, agent path unrun)
 - **M4** live camera end to end  (done for the software path; unrun on a real
   fixed camera, which is the outstanding gate)
+- **M5** floor coordinates and plan view  (done bar multi-camera)
+- **M6** agent tools and chat  (built, tested against a scripted client, unrun live)
+- **M7** re-measurement, digest, webhook  (done)
+- **M8** store map, product and brand numbers, export  (done on synthetic data;
+  unrun against a retailer's real planogram, which is its gate)
+- **M9** multi-store  (rollup across export files done; shared database not started)
+
+`docs/roadmap.md` is the fuller account of each.
 
 `openv live` writes to the same event store the offline pipeline does, so a live
 session is analysable afterwards with the same `openv analyze`. It also accepts a
@@ -122,9 +135,50 @@ arithmetic on raw rows would be unauditable, and a retailer argues with the numb
 before the advice. Recommendations are stored with status `proposed`; no code path
 sets `approved`, because approval is the liability gate.
 
-**OpenV knows zones, not products.** It cannot say "move SKU-204": that needs
-SKU-level identification, which is out of scope until Phase 3 hardware. The agent's
-system prompt forbids inventing SKUs, brands, or prices to paper over that gap.
+**OpenV measures zones, not products.** The cameras cannot see what is on a shelf.
+A product, brand or category exists only where the store map supplies it, and the
+agent's system prompts forbid inventing a SKU, brand, or price in every case. With no
+map it cannot say "move SKU-204", and says so.
+
+**A number belongs to a brand only where the brand has the zone to itself.** A reach
+lands in a zone. One brand in the zone: the zone's funnel is the brand's funnel. Several:
+each reach was for one of them and the data does not say which. `products.py` reports
+that zone as shared and gives the brand no number there.
+
+**Never split a shared zone's reaches by facings, or by anything else.** It produces a
+tidy number per brand, every one of which is an assumption about shoppers presented as
+a measurement of them, and it is the exact assumption a brand is paying to have tested.
+Share of facings is exported as a fact about the shelf and labelled as not being a
+share of reaches. The same rule holds for a single item, and for the pooled rate in
+`rollup.py`, where a store with no number contributes nothing.
+
+Zone granularity is therefore the granularity of product insight. The answer to "we
+cannot measure this brand" is a zone drawn over its section, not a cleverer formula.
+
+**The store map is recorded with the session**, like the zones. Planograms are reset
+every few weeks, so what was on a shelf is a fact about a session, and reading last
+month's reaches against this month's map would hand them to whatever replaced the
+product. Product analysis is per session for the same reason, and a brand's shoppers
+are counted once across its fixtures, which only means anything inside one session.
+
+**A fixture that was not watched is not a dead fixture.** A mapped shelf in a session
+with pose off, or with no zone drawn, reports as not measured. Calling its products
+untouched would be an accusation with no observation behind it.
+
+**`export.py` is the only thing built to leave the store for a third party**, so it is
+where "anonymised" has to be a property of the bytes. It is built from `ProductAnalysis`,
+which holds aggregates only. There is no code path from a track id, a position or a
+frame to it, and `tests/test_export.py` walks every key of the output. Keep it that
+way: a per-shopper row, a timestamped event, or a path in that file is a product
+decision for Nikolai under constraint 2, not a field to add.
+
+`--brand` narrows an export to one brand and counts the others without naming them.
+That is commercial confidentiality between a retailer and its suppliers, and is
+separate from shopper privacy, which is the same in both files.
+
+`openv demo-store` writes **synthetic** sessions, labelled as such in the store. They
+exist so the product layer can be run with no camera. They are evidence of nothing, and
+the README table quoted from them is pinned by a test so it cannot drift.
 
 The deterministic layer must keep working with no API key. It is the floor of the
 product, and `openv analyze` is the command that proves it.
