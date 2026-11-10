@@ -19,13 +19,13 @@ decision they would otherwise not have made.
 | M2 | Pose and reach detection | done, validated both directions |
 | M3 | Analysis and agent | done, agent path unrun |
 | M4 | Live camera, browser console | done in software, **unrun on a real camera** |
-| M5 | Spatial layer, floor coordinates | done bar multi-camera |
+| M5 | Spatial layer, camera fusion, 3D map | built, **fusion unrun on real cameras** |
 | M6 | Agent and chat surface | tools and loop built, unrun |
 | M7 | Connectors and automation | re-measurement, digest and webhook done |
-| M8 | Planogram integration, SKU level | not started |
-| M9 | Multi-store | not started |
+| M8 | Store map, product and brand numbers, export | built, **unrun on a real planogram** |
+| M9 | Multi-store | rollup across exports built, shared database not started |
 
-Three gates are open and none of them are code:
+Five gates are open and none of them are code:
 
 1. **M4 has never run on a real fixed camera.** Everything else is downstream of
    believing this works in a store.
@@ -37,6 +37,14 @@ Three gates are open and none of them are code:
    occlusion-proof denominators were tried; both give believable numbers and no
    discrimination. See CLAUDE.md. This needs footage of a reach with the whole
    body in frame, and a test fails if such footage ever arrives.
+4. **Fusion has never joined two real cameras.** It is scored against ground
+   truth on a synthetic store, where calibrations agree and clocks are exact.
+   Real cameras disagree about where the floor is by some amount nobody has
+   measured, and that amount decides the merge radius.
+5. **The store map has never held a retailer's real planogram.** M8 is verified
+   on a synthetic store and on hand-built cases. What a real planogram export
+   looks like, how often it disagrees with the shelf, and how fine the zones
+   have to be drawn before a brand gets a number are all still unknown.
 
 ---
 
@@ -117,21 +125,37 @@ space.
 - `openv live --floor` puts the plan view in the browser and records to the
   same store the offline path uses.
 
+- `fusion.py` and `openv fuse` join cameras recorded together into store-wide
+  paths, on floor position and time only.
+- A fused session reads as the whole store: each zone's funnel from the camera
+  that measured it, ranked against a store-wide median, with a shopper two
+  cameras both saw counted once.
+- `openv map3d` draws the store in three dimensions, as a replay in one HTML
+  file or live over every camera writing to the store.
+
+**The decision that gated multi-camera, as taken:** stitching one shopper
+across cameras is a form of re-identification, which collides with the
+session-scoped track ID rule. Spatial-temporal handoff on the floor plane needs
+no appearance model and keeps the privacy posture intact. Appearance-based
+re-ID does not, and it is the exact surface BIPA litigation targets. Fusion is
+the first kind and has no input that could carry the second.
+
+**What that costs, measured on the synthetic store:** no fused track held two
+shoppers, 85% of shoppers came out as one track across three cameras, and the
+count ran 16% high from refusing to guess. An appearance model would close
+most of that 16%. It is not worth the posture.
+
+**Exit criteria:** two real cameras with overlapping coverage produce one
+continuous path across the seam, with no appearance model involved. Met on
+synthetic cameras. Not yet run on real ones.
+
 **Remaining:**
 
-- **Multi-camera fusion.** Each camera gets its own homography into one shared
-  floor space.
-
-**The decision that gates multi-camera:** stitching one shopper across cameras is
-a form of re-identification, which collides with the session-scoped track ID
-rule. Spatial-temporal handoff on the floor plane, where a track leaving one
-camera's frustum is matched to one entering another's at the same floor point,
-needs no appearance model and keeps the privacy posture intact. Appearance-based
-re-ID does not, and it is the exact surface BIPA litigation targets. This is a
-product decision, not an implementation detail.
-
-**Exit criteria:** two cameras with overlapping coverage produce one continuous
-path across the seam, with no appearance model involved.
+- Two real cameras, to measure how far apart they place one shopper.
+- A live console that runs several cameras in one process. Today each camera
+  is its own process against a shared store, and `map3d --live` is where they
+  meet.
+- Clock sync between cameras that is better than each machine's own clock.
 
 ---
 
@@ -194,16 +218,20 @@ The loop is tested against a scripted fake client, so the machinery is verified
 with no credentials. **The real path has still never run**, which remains one of
 the three open gates.
 
-**Still to build for M6:** message persistence across restarts, the page itself,
-and the proposal-from-answer flow.
+Threads persist across restarts (`openv threads`, `openv ask --thread`), and
+since M8 the agent has two more tools, `list_products` and `get_brand`, which
+are its only source of a product or brand name.
+
+**Still to build for M6:** the page itself, and the proposal-from-answer flow.
 
 ### Other constraints
 
 - **Every claim carries its provenance.** An answer cites the tool calls behind
   it, and the user can expand them. This is what makes the answer defensible in
   a room with a category manager who disagrees.
-- **No invented SKUs, brands or prices.** OpenV knows zones, not products,
-  until M8. The existing system prompt already forbids papering over that gap.
+- **No invented SKUs, brands or prices.** A product exists for the agent only
+  where the store map supplies it. The system prompts forbid papering over a
+  gap, and forbid giving a shared zone's numbers to one of its occupants.
 - **Chat can propose, never approve.** Same liability gate.
 - **The deterministic layer keeps working with no API key.** `openv analyze` is
   the floor of the product and must never depend on a model being reachable.
@@ -266,29 +294,60 @@ without anyone asking for it.
 
 ---
 
-## M8, planogram integration
+## M8, the store map
 
-**Goal:** say "the Brand X facing on the mid shelf" instead of "shelf-endcap".
+**Goal:** say "the Northfield facing in aisle 6" instead of "shelf-cereal".
 
-OpenV knows zones, not products. CLAUDE.md frames this as a hardware limit
-awaiting Phase 3 hardware, but that framing is wrong: integrating with the
-retailer's own shelf-item system routes around it entirely. If their system knows
-which SKU sits at shelf position X, and OpenV knows a reach happened in the zone
-covering X, that is product-level insight with zero SKU vision and no new
-hardware.
+OpenV measures zones, not products. An earlier framing called that a hardware
+limit awaiting better cameras, and that framing was wrong: the retailer's own
+shelf data routes around it entirely. If their system knows which item sits at
+a shelf position, and OpenV knows a reach happened in the zone covering it,
+that is product-level insight with no product vision and no new hardware.
 
-**This is the phase that unlocks CPG as a buyer.** Retailer value works fine at
-zone granularity. Brand value mostly does not, because a brand cares about their
+**This is the phase that makes a brand a buyer.** Retailer value works at zone
+granularity. Brand value mostly does not, since a brand cares about its own
 facing and not about the endcap in aggregate.
 
-**Consequence for M1 and M5:** zone granularity becomes the granularity of
-product insight. Today a shelf zone is one polygon over a whole shelf face,
-which is right when insight is zone-level. Per-section zones start mattering
-here, which is also an argument for making zone drawing much cheaper than
-clicking polygons by hand.
+**Built:**
 
-**Privacy posture is unaffected.** Shelf-position-to-SKU mapping is store data,
-not shopper data.
+- `storemap.py`: a store's fixtures, the shelf zone each is watched through,
+  where each stands on the plan, and the items on it. Checked against the
+  zones before anything is recorded, so a typo cannot become a product nobody
+  touched.
+- The map is recorded with the session, like the zones, so a reach is read
+  against what was on the shelf that day and a planogram reset cannot rewrite
+  last month.
+- `products.py`: brand, category and item numbers, under one rule. A number
+  belongs to a brand only where the brand has the zone to itself. A shared
+  zone is reported as shared and its reaches are never split, by facings or
+  by anything else. A brand's shoppers are counted once across its fixtures.
+- `export.py` and `openv export`: the aggregate file a retailer or a brand
+  receives, which states in itself what it does not contain. `--brand`
+  narrows it to one brand and counts the others without naming them.
+- `planview.py` and `openv planview`: the store plan, fixtures coloured by
+  finding, foot traffic underneath when positions were recorded.
+- `openv demo-store`: two synthetic stores, so all of the above runs with no
+  camera, no GPU and no API key.
+
+**Consequence for M1 and M5:** zone granularity is now the granularity of
+product insight. One polygon over a whole bay was right when insight was
+zone-level. Per-section zones are what give a brand a number, which is an
+argument for making zone drawing much cheaper than clicking polygons by hand,
+and for generating shelf zones from the store map's own sections.
+
+**Privacy posture is unaffected.** A store map is store data, not shopper data.
+
+**Still to build for M8:**
+
+- An importer for the planogram formats retailers actually export, in place of
+  hand-written JSON.
+- Shelf zones generated from fixture sections, so the map and the zones cannot
+  disagree.
+- Time windows inside a session, so a promotion that ran from Thursday can be
+  read on its own.
+
+**Exit criteria:** one retailer's real planogram, loaded without hand editing,
+produces a brand table that their category manager recognises as their store.
 
 ---
 
@@ -296,19 +355,32 @@ not shopper data.
 
 **Goal:** compare stores, and support a brand or chain across sites.
 
-The event store schema is deliberately plain so it ports to Postgres unchanged.
-That is the migration this phase begins with.
+**Built:** `openv rollup` pools export files per brand or category. It reads
+the exports and nothing else, so it needs no access to any store's database,
+footage or cameras, and what crossed the wall to reach it was already
+aggregate. It refuses the same session twice, a store with no number adds
+nothing to the pool, and every store's own row stays beside the total.
 
-**Open question that changes the company.** Selling a retailer recommendations
-about their own store is unambiguously software. Selling brands continuous
-cross-store shelf performance is much closer to an insight product, priced on
-coverage rather than on decisions. Both are viable. They are different
-businesses with different architectures, and the choice should be deliberate
-rather than arrived at.
+**Remaining:** the event store schema is deliberately plain so it ports to
+Postgres unchanged. That migration, and aggregation that runs continuously and
+not from files, is where this phase goes next.
+
+**The decision this phase turned on.** Selling a retailer recommendations about
+their own store is software. Selling brands continuous cross-store shelf
+performance is closer to an insight product, priced on coverage and not on
+decisions. The direction is now both, from one builder: the retailer's export
+is the whole store, and a brand's is the same file narrowed. The architecture
+that follows from it is that everything a brand receives is derived from the
+export, never from a store's database.
+
+What the brand product still must not become is a path around the posture. No
+row per shopper, no timestamped events, nothing linking one visit to the next.
+A brand buys counts per zone per session, and the pool across stores.
 
 Note the existing design deliberately rejected the industry-benchmark angle: the
-benchmark is the store's own median, precisely because an external number is
-arguable. Revisiting that is a strategy decision, not a feature.
+benchmark is the store's own median, since an external number is arguable. A
+category row is the benchmark a brand is shown, and it is still that store's
+own. Revisiting that is a strategy decision, not a feature.
 
 ---
 
@@ -319,9 +391,13 @@ Not a phase, but none of the above ships to a customer without these.
 - **Edge packaging.** How this actually runs in a store: hardware, install,
   update, and what happens when the network drops.
 - **Auth and multi-tenancy.** Currently there is neither.
-- **Retention enforcement in code.** The privacy posture is stated in CLAUDE.md
-  and honoured by construction. It should be enforced and testable, not
-  conventional.
+- **Retention enforcement in code.** Done for the code as it stands:
+  `tests/test_privacy_posture.py` fails on a face landmark, a pixel write, an
+  identifier that outlives a session, or a track id in an outbound module, and
+  `tests/test_export.py` walks every key of the export. What is not yet
+  enforced is retention on a deployed box, which belongs with edge packaging.
+- **A data agreement.** The export is clean by construction. What a retailer
+  permits a brand to receive, and on what terms, is a contract and not a flag.
 - **Cost per camera.** Behaviour analytics does not need 30fps; dwell, path and
   conversion are fine at 2 to 5fps, and that is what makes tiled inference
   practical on real hardware. Worth measuring properly before pricing.
@@ -330,19 +406,19 @@ Not a phase, but none of the above ships to a customer without these.
 
 ## Sequencing
 
-**Next:** finish M5 calibration, because everything spatial depends on a
-calibration someone can actually produce, and because it is the gate for the
-bird's-eye view.
+**Next: a real planogram.** M8 is the newest layer and the least tested against
+the thing it exists for. One retailer's shelf data will show how fine the zones
+must be and what the importer has to read.
 
-**Then M6**, since the chat surface is where the product becomes usable by
-someone who is not an analyst, and the dashboard being designed now should be
-built around findings and approvals rather than charts.
+**Then per-section zones from the map**, since a brand with no number is the
+first thing a brand buyer will see, and the fix is zone granularity.
 
-**Then M7 re-measurement first**, because proving a change worked is what makes
-this renewable rather than a one-off study.
+**Then the M6 page**, built around findings, products and approvals and not
+around charts.
 
-M8 waits on a retailer partner willing to expose planogram data. M9 waits on
-more than one store.
+M5 fusion waits on two real cameras. M9's database waits on more than a
+handful of stores.
 
-The three open gates at the top of this document outrank all of it. A live
-camera in a real store tells you more than any of these phases.
+The five open gates at the top of this document outrank all of it. A live
+camera in a real store, with that store's own planogram, tells you more than
+any of these phases.

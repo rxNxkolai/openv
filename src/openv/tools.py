@@ -6,7 +6,7 @@ quietly stop being defensible: a model with database access, or with a
 text-to-SQL escape hatch, is a model doing arithmetic on raw rows, and a retailer
 argues with the numbers long before they argue with the advice.
 
-So the contract is the same as everywhere else in Patron. **The agent never
+So the contract is the same as everywhere else in OpenV. **The agent never
 computes.** Every number it can cite came out of `analysis.py`, and these
 functions are the only way it can reach them.
 
@@ -280,6 +280,90 @@ def get_recommendations(
     }
 
 
+def _products(store: EventStore, session_id: int | None):
+    """Product analysis for a session, and which session it turned out to be.
+
+    Product numbers are per session, because the store map is a fact about a
+    session. A whole-store question is answered from the latest one and says
+    so, so nobody reads one day's planogram as the store's permanent state.
+    """
+    from openv.products import analyze_products
+
+    chosen = session_id if session_id is not None else store.latest_session_id()
+    if chosen is None:
+        return None, None
+    return analyze_products(store, chosen), chosen
+
+
+_NO_MAP = (
+    "no store map is recorded for this session, so nothing is known about what "
+    "is on any shelf. Zone-level findings are unaffected"
+)
+
+
+def list_products(
+    store: EventStore, session_id: int | None = None, zone: str | None = None
+) -> dict[str, Any]:
+    """What the retailer's store map says is on each measured shelf zone.
+
+    The numbers on each row are the zone's, and `brand_attribution` says
+    whether they can be read as one brand's. They are never split.
+    """
+    from openv.export import zone_row
+
+    products, chosen = _products(store, session_id)
+    if products is None:
+        return {"mapped": False, "reason": _NO_MAP}
+
+    shelves = [s for s in products.shelves if zone is None or s.zone == zone]
+    if zone is not None and not shelves:
+        return {
+            "mapped": True,
+            "found": False,
+            "reason": f"no measured shelf zone named {zone!r}",
+            "available": [s.zone for s in products.shelves],
+        }
+    return {
+        "mapped": True,
+        "session": chosen,
+        "store": products.store_map.site,
+        "zones": [zone_row(s) for s in shelves],
+        "on_the_map_but_not_measured": list(products.unwatched_zones),
+        "attribution_note": (
+            "'exclusive' means one brand has the zone to itself and the zone's "
+            "numbers are that brand's. 'shared' means several brands are in it "
+            "and a reach there cannot be given to any one of them."
+        ),
+    }
+
+
+def get_brand(
+    store: EventStore, brand: str, session_id: int | None = None
+) -> dict[str, Any]:
+    """One brand's funnel across the zones it has to itself, each shopper once."""
+    from openv.export import rollup_row
+
+    products, chosen = _products(store, session_id)
+    if products is None:
+        return {"mapped": False, "reason": _NO_MAP}
+
+    rollup = products.brand(brand)
+    if rollup is None:
+        return {
+            "mapped": True,
+            "found": False,
+            "reason": f"no brand {brand!r} on the store map",
+            "available": [b.name for b in products.brands],
+        }
+    return {
+        "mapped": True,
+        "found": True,
+        "session": chosen,
+        "store": products.store_map.site,
+        **rollup_row(rollup, products.analysis.median_reach_rate),
+    }
+
+
 #: What the model is told it can call. Kept beside the implementations so a tool
 #: cannot be advertised without existing, or exist without being described.
 TOOL_SPECS: tuple[dict[str, Any], ...] = (
@@ -364,6 +448,33 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
             "required": [],
         },
     },
+    {
+        "name": "list_products",
+        "description": (
+            "What the retailer's own store map says is on each measured shelf "
+            "zone, beside that zone's funnel. The only source of product, brand "
+            "or category names. Each zone says whether one brand has it to "
+            "itself; a shared zone's numbers belong to no single brand."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"zone": {"type": "string"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_brand",
+        "description": (
+            "One brand's funnel across the shelf zones it has to itself, each "
+            "shopper counted once. Comes back as not measured, with the reason, "
+            "when the brand shares every zone it is in."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"brand": {"type": "string"}},
+            "required": ["brand"],
+        },
+    },
 )
 
 TOOLS = {
@@ -373,6 +484,8 @@ TOOLS = {
     "compare_zones": compare_zones,
     "measure_change": measure_change,
     "get_recommendations": get_recommendations,
+    "list_products": list_products,
+    "get_brand": get_brand,
 }
 
 

@@ -75,8 +75,12 @@ class LiveEngine:
         min_arm_extension: float = DEFAULT_MIN_ARM_EXTENSION,
         floor_path: str | Path | None = None,
         position_interval: float = 1.0,
+        store_map=None,
     ) -> None:
         self.source_spec = source
+        # What is on the shelves, recorded with each session the console opens.
+        # Dropped the moment zones are redrawn in the browser: see _open_session.
+        self._store_map = store_map
         self.width = width
         self.height = height
         self.zones_path = Path(zones_path) if zones_path else None
@@ -398,10 +402,23 @@ class LiveEngine:
             ),
             zones=zones,
             pose=self.pose_enabled,
+            store_map=self._map_for(zones),
         )
         with self._lock:
             self._session_id = session_id
         return session_id
+
+    def _map_for(self, zones):
+        """The store map, if it still fits the zones this session is opening with.
+
+        Zones can be redrawn in the browser mid-run, and a map that named a
+        zone which no longer exists would attach products to nothing. A map
+        that has stopped fitting is left off the new session rather than
+        recorded wrong, and the session then simply has zone numbers.
+        """
+        if self._store_map is None or zones is None:
+            return None
+        return None if self._store_map.problems(zones) else self._store_map
 
     def _consume(self, result: FrameResult, frame: np.ndarray, fps: float, store) -> None:
         if store is not None and self._zones_changed:
@@ -531,6 +548,58 @@ class LiveEngine:
                     if len(pts) > 1
                 ],
             }
+
+    def scene_payload(self) -> dict[str, Any]:
+        """What the 3D map needs besides positions: the store and this camera.
+
+        Fixtures come from the store map when one was given, without findings:
+        the console's findings panel already carries those, live, and a colour
+        frozen at page load would go stale beside it.
+        """
+        with self._lock:
+            floor_map, store_map = self._floor_map, self._store_map
+            extent = self._floor_extent
+        if floor_map is None:
+            return {"enabled": False}
+
+        from openv.mapview import camera_footprint
+
+        fixtures = []
+        outline = None
+        site = {"id": "unmapped", "name": None}
+        if store_map is not None:
+            site = {"id": store_map.site, "name": store_map.name}
+            outline = [list(p) for p in store_map.outline] if store_map.outline else None
+            fixtures = [
+                {
+                    "zone": f.zone, "label": f.label, "brands": list(f.brands),
+                    "plan": [list(p) for p in f.plan] if f.plan is not None else None,
+                    "measured": True, "severity": "none",
+                    "rate": "", "counts": "", "readout": "",
+                }
+                for f in store_map.fixtures
+            ]
+        if outline:
+            xs = [p[0] for p in outline]
+            ys = [p[1] for p in outline]
+            extent = (min(xs), min(ys), max(xs), max(ys))
+        return {
+            "enabled": True,
+            "site": site,
+            "units": floor_map.units,
+            "outline": outline,
+            "extent": list(extent),
+            "fixtures": fixtures,
+            "cameras": [
+                {
+                    "label": "this camera",
+                    "footprint": camera_footprint(
+                        floor_map.as_dict(), self.width, self.height
+                    ),
+                }
+            ],
+            "tracks": [],
+        }
 
     def _record(self, visits: list[ZoneSpan], reaches: list[ZoneSpan]) -> None:
         with self._lock:

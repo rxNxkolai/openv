@@ -5,7 +5,7 @@ MediaPipe's pose model is single-person regardless of its `num_poses` option, so
 cropping is not a workaround here, it is the intended way to use it when you
 already have detections.
 
-Only upper-body joints are kept. Patron needs to know whether a hand went toward a
+Only upper-body joints are kept. OpenV needs to know whether a hand went toward a
 shelf, and nothing else about the body, so storing a full skeleton would be
 collecting more than the product uses. See CLAUDE.md constraint 2.
 """

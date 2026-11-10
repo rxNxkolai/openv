@@ -51,7 +51,7 @@ def test_pose_collects_no_face_landmark():
     """MediaPipe landmarks 0 to 10 are the face: nose, eyes, ears, mouth.
 
     Collecting one would make this a face-processing system, which is the
-    single line that must not be crossed. Patron needs to know whether a hand
+    single line that must not be crossed. OpenV needs to know whether a hand
     went toward a shelf and nothing else about the body.
     """
     from openv.pose import JOINTS
@@ -70,7 +70,7 @@ def test_pose_landmarks_are_only_ever_read_through_the_joint_map():
 
     The claim this defends is narrower than "we never compute anything facial",
     and the narrow one is the true one. MediaPipe computes all 33 landmarks
-    including the face; what Patron can prove is that **no facial landmark value
+    including the face; what OpenV can prove is that **no facial landmark value
     is ever read out of the model**. That is exactly this test.
     """
     text = (SRC / "pose.py").read_text(encoding="utf-8")
@@ -239,7 +239,10 @@ def test_no_emotion_or_demographic_inference_anywhere():
     assert offenders == [], f"prohibited inference appeared: {offenders}"
 
 
-@pytest.mark.parametrize("module", ["digest", "deliver", "tools"])
+@pytest.mark.parametrize(
+    "module",
+    ["digest", "deliver", "tools", "products", "export", "rollup", "planview", "storemap"],
+)
 def test_the_outbound_modules_carry_no_track_identifier(module):
     """Anything that leaves the machine is aggregate.
 

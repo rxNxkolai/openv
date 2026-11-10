@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from openv.events import ZoneVisit
+from openv.storemap import Fixture, Placement, StoreMap
 from openv.zones import Zone, ZoneSet
 
 SCHEMA = """
@@ -126,6 +127,75 @@ CREATE TABLE IF NOT EXISTS zones (
     UNIQUE (session_id, name)
 );
 
+-- The store map a session was measured against: which store this is, where
+-- each fixture stands on the plan, and what the retailer says is on it. Same
+-- reasoning as `zones` above. A planogram is reset every few weeks, so "what
+-- was on that shelf" is a fact about a session, not about the store, and a
+-- brand number read against today's map for last month's footage would be
+-- attributed to whatever replaced it.
+--
+-- This is store data. Nothing in these three tables describes a shopper.
+CREATE TABLE IF NOT EXISTS sites (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+    site        TEXT    NOT NULL,
+    name        TEXT,
+    units       TEXT    NOT NULL,
+    outline     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fixtures (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id),
+    zone        TEXT    NOT NULL,
+    label       TEXT,
+    plan        TEXT,
+    UNIQUE (session_id, zone)
+);
+
+CREATE TABLE IF NOT EXISTS placements (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id),
+    zone        TEXT    NOT NULL,
+    sku         TEXT    NOT NULL,
+    product     TEXT    NOT NULL,
+    brand       TEXT    NOT NULL,
+    category    TEXT    NOT NULL,
+    facings     INTEGER NOT NULL DEFAULT 1,
+    level       TEXT,
+    UNIQUE (session_id, zone, sku)
+);
+
+CREATE INDEX IF NOT EXISTS idx_placements_brand ON placements(brand, session_id);
+
+-- A fused session is several cameras' floor positions joined into store-wide
+-- paths, and this is which camera sessions it was built from and how their
+-- clocks were lined up. Without it a fused path is a claim nobody can audit:
+-- the cameras behind it, and the time offset that decided which dots were
+-- "at the same moment", would be gone.
+--
+-- Members are always sessions recorded at the same time. Joining across
+-- days would be re-identification, and the code that writes this refuses to.
+CREATE TABLE IF NOT EXISTS fusions (
+    id              INTEGER PRIMARY KEY,
+    session_id      INTEGER NOT NULL REFERENCES sessions(id),
+    member_session  INTEGER NOT NULL REFERENCES sessions(id),
+    offset_s        REAL    NOT NULL,
+    UNIQUE (session_id, member_session)
+);
+
+-- Which camera track became which fused track. The audit trail behind a
+-- fused path, and what lets a shopper two cameras both saw be counted once.
+-- Both ids are scoped to their sessions and neither says who anybody is.
+CREATE TABLE IF NOT EXISTS fusion_links (
+    id              INTEGER PRIMARY KEY,
+    session_id      INTEGER NOT NULL REFERENCES sessions(id),
+    member_session  INTEGER NOT NULL REFERENCES sessions(id),
+    track_id        INTEGER NOT NULL,
+    fused_id        INTEGER NOT NULL,
+    UNIQUE (session_id, member_session, track_id)
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id          INTEGER PRIMARY KEY,
     session_id  INTEGER REFERENCES sessions(id),
@@ -202,19 +272,28 @@ class EventStore:
         calibration: dict | None = None,
         zones: ZoneSet | None = None,
         pose: bool | None = None,
+        store_map: StoreMap | None = None,
+        started_at: datetime | None = None,
     ) -> int:
         """Open a session and record what it was measured against.
 
         `zones` and `pose` are the two facts a later reader needs to interpret
         an absence: a shelf with no reach rows is a dead fixture if the zone
-        was drawn and pose ran, and nothing at all otherwise.
+        was drawn and pose ran, and nothing at all otherwise. `store_map` is
+        what was on those shelves at the time, which is the only version of
+        that fact worth joining a reach to.
         """
         cursor = self._conn.execute(
             "INSERT INTO sessions (source, started_at, fps, width, height, calibration, pose)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 source,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                # Milliseconds, because this is the clock several cameras are
+                # lined up on. At walking pace a second of error between two
+                # cameras is over a metre on the floor.
+                (started_at or datetime.now(timezone.utc)).isoformat(
+                    timespec="milliseconds"
+                ),
                 float(fps),
                 int(width),
                 int(height),
@@ -231,8 +310,179 @@ class EventStore:
                     for z in zones
                 ],
             )
+        if store_map is not None:
+            self._write_store_map(session_id, store_map)
         self._conn.commit()
         return session_id
+
+    def _write_store_map(self, session_id: int, store_map: StoreMap) -> None:
+        self._conn.execute(
+            "INSERT INTO sites (session_id, site, name, units, outline)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                session_id,
+                store_map.site,
+                store_map.name,
+                store_map.units,
+                json.dumps([list(p) for p in store_map.outline])
+                if store_map.outline is not None
+                else None,
+            ),
+        )
+        self._conn.executemany(
+            "INSERT INTO fixtures (session_id, zone, label, plan) VALUES (?, ?, ?, ?)",
+            [
+                (
+                    session_id,
+                    f.zone,
+                    f.label,
+                    json.dumps([list(p) for p in f.plan]) if f.plan is not None else None,
+                )
+                for f in store_map.fixtures
+            ],
+        )
+        self._conn.executemany(
+            "INSERT INTO placements"
+            " (session_id, zone, sku, product, brand, category, facings, level)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (session_id, p.zone, p.sku, p.product, p.brand, p.category, p.facings, p.level)
+                for p in store_map.placements
+            ],
+        )
+
+    def attach_store_map(
+        self, session_id: int, store_map: StoreMap, replace: bool = False
+    ) -> None:
+        """Record a store map against a session that was captured without one.
+
+        Legitimate because the map is store data that exists independently of
+        the footage: what was on the shelf that day is a fact whether or not
+        anyone typed it in beforehand. It is also the caller's claim that this
+        map was the one in effect, which nothing here can check.
+
+        Refuses to overwrite silently. A session whose products changed after
+        its numbers were read is a session whose brand figures changed with
+        them, and that should take a deliberate flag.
+        """
+        if self.session(session_id) is None:
+            raise ValueError(f"no session {session_id}")
+        if self.session_store_map(session_id) is not None:
+            if not replace:
+                raise ValueError(
+                    f"session {session_id} already has a store map recorded"
+                )
+            for table in ("placements", "fixtures", "sites"):
+                self._conn.execute(
+                    f"DELETE FROM {table} WHERE session_id = ?",  # noqa: S608 - literals
+                    (session_id,),
+                )
+        self._write_store_map(session_id, store_map)
+        self._conn.commit()
+
+    def session_store_map(self, session_id: int) -> StoreMap | None:
+        """The store map a session was measured against, or None if unrecorded."""
+        site = self._conn.execute(
+            "SELECT site, name, units, outline FROM sites WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if site is None:
+            return None
+
+        def polygon(text: str | None):
+            if text is None:
+                return None
+            return tuple((float(x), float(y)) for x, y in json.loads(text))
+
+        placements: dict[str, list[Placement]] = {}
+        for r in self._conn.execute(
+            "SELECT zone, sku, product, brand, category, facings, level"
+            " FROM placements WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ):
+            placements.setdefault(r["zone"], []).append(
+                Placement(
+                    zone=r["zone"],
+                    sku=r["sku"],
+                    product=r["product"],
+                    brand=r["brand"],
+                    category=r["category"],
+                    facings=int(r["facings"]),
+                    level=r["level"],
+                )
+            )
+        fixtures = tuple(
+            Fixture(
+                zone=r["zone"],
+                label=r["label"],
+                plan=polygon(r["plan"]),
+                placements=tuple(placements.get(r["zone"], ())),
+            )
+            for r in self._conn.execute(
+                "SELECT zone, label, plan FROM fixtures WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            )
+        )
+        return StoreMap(
+            site=site["site"],
+            name=site["name"],
+            units=site["units"],
+            outline=polygon(site["outline"]),
+            fixtures=fixtures,
+        )
+
+    def session(self, session_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def shoppers_in(
+        self, zones: Iterable[str], session_id: int, min_dwell_s: float = 0.0
+    ) -> int:
+        """Distinct shoppers who visited any of these floor zones in one session.
+
+        Distinct across the set, so a shopper who walked past two fixtures of
+        the same brand is one shopper and not two. That is only meaningful
+        inside a session, which is why the session is not optional here.
+        """
+        return self._distinct_tracks("visits", zones, session_id, min_dwell_s)
+
+    def reachers_in(self, zones: Iterable[str], session_id: int) -> int:
+        """Distinct shoppers who reached into any of these shelf zones."""
+        return self._distinct_tracks("reaches", zones, session_id, 0.0)
+
+    def _distinct_tracks(
+        self, table: str, zones: Iterable[str], session_id: int, min_dwell_s: float
+    ) -> int:
+        names = sorted(set(zones))
+        if not names:
+            return 0
+        marks = ", ".join("?" for _ in names)
+        members = [m for m, _ in self.fusion_members(session_id)]
+        if members:
+            # A fused session: the rows live with the cameras that measured
+            # them, and a shopper two cameras both saw is one fused track. A
+            # camera track that was never placed on the floor has no fused id
+            # and stands for itself, under a key no fused id can collide with.
+            member_marks = ", ".join("?" for _ in members)
+            row = self._conn.execute(
+                f"SELECT COUNT(DISTINCT COALESCE(l.fused_id,"  # noqa: S608
+                f" -(v.session_id * 10000000 + v.track_id))) AS n FROM {table} v"
+                " LEFT JOIN fusion_links l ON l.session_id = ?"
+                " AND l.member_session = v.session_id AND l.track_id = v.track_id"
+                f" WHERE v.session_id IN ({member_marks}) AND v.dwell_s >= ?"
+                f" AND v.zone IN ({marks})",
+                (session_id, *members, min_dwell_s, *names),
+            ).fetchone()
+            return int(row["n"]) if row else 0
+        # `table` is one of two literals, and `marks` is only question marks.
+        row = self._conn.execute(
+            f"SELECT COUNT(DISTINCT track_id) AS n FROM {table}"  # noqa: S608
+            f" WHERE session_id = ? AND dwell_s >= ? AND zone IN ({marks})",
+            (session_id, min_dwell_s, *names),
+        ).fetchone()
+        return int(row["n"]) if row else 0
 
     def session_zones(self, session_id: int) -> ZoneSet | None:
         """The zones a session was measured against, or None if unrecorded.
@@ -327,6 +577,99 @@ class EventStore:
         )
         self._conn.commit()
         return len(rows)
+
+    def position_rows(self, session_id: int) -> list[tuple[int, float, float, float]]:
+        """One session's positions as (track_id, t_s, x, y), in time order."""
+        return [
+            (int(r["track_id"]), float(r["t_s"]), float(r["x"]), float(r["y"]))
+            for r in self._conn.execute(
+                "SELECT track_id, t_s, x, y FROM positions"
+                " WHERE session_id = ? ORDER BY t_s, id",
+                (session_id,),
+            )
+        ]
+
+    def position_span(self, session_id: int) -> tuple[float, float] | None:
+        """First and last position time in a session, or None when it has none."""
+        row = self._conn.execute(
+            "SELECT MIN(t_s) AS first, MAX(t_s) AS last FROM positions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None or row["first"] is None:
+            return None
+        return float(row["first"]), float(row["last"])
+
+    def fusion_of(self, members: Iterable[int]) -> int | None:
+        """The fused session already built from exactly these members, if any."""
+        wanted = sorted(set(members))
+        for row in self._conn.execute("SELECT DISTINCT session_id FROM fusions"):
+            if [m for m, _ in self.fusion_members(int(row["session_id"]))] == wanted:
+                return int(row["session_id"])
+        return None
+
+    def latest_fused_session(self) -> int | None:
+        row = self._conn.execute("SELECT MAX(session_id) AS id FROM fusions").fetchone()
+        return int(row["id"]) if row and row["id"] is not None else None
+
+    def positions_since(self, after_id: int) -> list[sqlite3.Row]:
+        """Positions written after a row id, across every session.
+
+        What a live map tails: it remembers the last row it saw and asks for
+        what has arrived since, from however many cameras are writing.
+        """
+        return list(
+            self._conn.execute(
+                "SELECT id, session_id, track_id, t_s, x, y FROM positions"
+                " WHERE id > ? ORDER BY id",
+                (after_id,),
+            )
+        )
+
+    def max_position_id(self) -> int:
+        row = self._conn.execute("SELECT MAX(id) AS id FROM positions").fetchone()
+        return int(row["id"]) if row and row["id"] is not None else 0
+
+    def add_fusion_members(
+        self, session_id: int, members: Iterable[tuple[int, float]]
+    ) -> None:
+        self._conn.executemany(
+            "INSERT INTO fusions (session_id, member_session, offset_s) VALUES (?, ?, ?)",
+            [(session_id, member, offset) for member, offset in members],
+        )
+        self._conn.commit()
+
+    def add_fusion_links(
+        self, session_id: int, links: Iterable[tuple[int, int, int]]
+    ) -> None:
+        """Record (member session, camera track id, fused id) for a fused session."""
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO fusion_links"
+            " (session_id, member_session, track_id, fused_id) VALUES (?, ?, ?, ?)",
+            [(session_id, member, track, fused) for member, track, fused in links],
+        )
+        self._conn.commit()
+
+    def fused_shoppers(self, session_id: int) -> int:
+        """Distinct fused tracks in a fused session: the store-wide shopper count."""
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT track_id) AS n FROM positions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def fusion_members(self, session_id: int) -> list[tuple[int, float]]:
+        """The camera sessions a fused session was built from, with offsets.
+
+        Empty for an ordinary camera session.
+        """
+        return [
+            (int(r["member_session"]), float(r["offset_s"]))
+            for r in self._conn.execute(
+                "SELECT member_session, offset_s FROM fusions"
+                " WHERE session_id = ? ORDER BY member_session",
+                (session_id,),
+            )
+        ]
 
     def paths(
         self, session_id: int | None = None, min_points: int = 2
@@ -470,7 +813,8 @@ class EventStore:
                    (SELECT COUNT(*) FROM visits    v WHERE v.session_id = s.id) AS visits,
                    (SELECT COUNT(*) FROM reaches   r WHERE r.session_id = s.id) AS reaches,
                    (SELECT COUNT(*) FROM positions p WHERE p.session_id = s.id) AS positions,
-                   (SELECT COUNT(*) FROM zones     z WHERE z.session_id = s.id) AS zones
+                   (SELECT COUNT(*) FROM zones     z WHERE z.session_id = s.id) AS zones,
+                   (SELECT site FROM sites t WHERE t.session_id = s.id)            AS site
             FROM sessions s
             ORDER BY s.id DESC
             """

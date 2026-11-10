@@ -23,6 +23,8 @@ LIGHT_COMMANDS = [
     ["sessions"],
     ["threads"],
     ["measure", "shelf"],
+    ["export"],
+    ["planview"],
 ]
 
 

@@ -1,4 +1,4 @@
-"""Patron CLI."""
+"""OpenV CLI."""
 
 from __future__ import annotations
 
@@ -13,8 +13,38 @@ DATA_DIR = REPO_ROOT / "data"
 OUT_DIR = REPO_ROOT / "out"
 
 
+def _load_store_map(map_path: str, zones_path: str | None):
+    """Load a store map and hold it to the zones it will be recorded with.
+
+    Returns (store_map, None) or (None, message). Checked before anything
+    expensive starts, because a fixture pointing at a zone that does not exist
+    would otherwise surface an hour later as a product nobody ever touched.
+    """
+    from openv.storemap import StoreMap
+    from openv.zones import ZoneSet
+
+    if not zones_path:
+        return None, "--map needs --zones: products sit on shelf zones"
+    try:
+        store_map = StoreMap.load(map_path)
+        zones = ZoneSet.load(zones_path)
+    except ValueError as exc:
+        return None, str(exc)
+    problems = store_map.problems(zones)
+    if problems:
+        return None, f"{map_path} does not fit {zones_path}: " + "; ".join(problems)
+    return store_map, None
+
+
 def _cmd_track(args: argparse.Namespace) -> int:
     import cv2
+
+    store_map = None
+    if args.map:
+        store_map, problem = _load_store_map(args.map, args.zones)
+        if problem:
+            print(f"error: {problem}", file=sys.stderr)
+            return 1
 
     from openv.detectors import RFDETRPersonDetector
     from openv.pipeline import Pipeline
@@ -137,8 +167,19 @@ def _cmd_track(args: argparse.Namespace) -> int:
                 # to have been watched, which is what makes zero a finding.
                 zones=zones,
                 pose=pose_estimator is not None,
+                # And what was on the shelves, so a reach can be read in
+                # product terms later against the map that was true that day.
+                store_map=store_map,
             )
             print(f"db       {args.db} (session {session_id})")
+            if store_map is not None:
+                print(
+                    f"map      {args.map} (store {store_map.site}, "
+                    f"{len(store_map.placements)} items on "
+                    f"{len(store_map.fixtures)} fixtures)"
+                )
+                if not args.pose:
+                    print("         note: a store map needs --pose, products are read from reaches")
 
         renderer = Renderer(
             resolution_wh=(info.width, info.height),
@@ -438,7 +479,20 @@ def _cmd_advise(args: argparse.Namespace) -> int:
 
     print(f"\nasking {args.model} about {len(analysis.actionable)} finding(s)...\n")
     try:
-        recommendations = advise(analysis, model=args.model, effort=args.effort)
+        shelf_contents = None
+        if session_id is not None:
+            recorded = store.session_store_map(session_id)
+            if recorded is not None:
+                # The retailer's own map, so the advice can name what is on a
+                # shelf without the model inventing it.
+                shelf_contents = {
+                    f.zone: [p.as_dict() for p in f.placements]
+                    for f in recorded.fixtures
+                    if f.placements
+                }
+        recommendations = advise(
+            analysis, model=args.model, effort=args.effort, shelf_contents=shelf_contents
+        )
     except AdvisorUnavailable as exc:
         print(f"advisor unavailable: {exc}", file=sys.stderr)
         print(
@@ -480,6 +534,20 @@ def _cmd_live(args: argparse.Namespace) -> int:
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    store_map = None
+    if args.map:
+        if not Path(args.zones).exists():
+            print(
+                f"error: --map needs zones that already exist, and {args.zones} "
+                "does not. Draw them first, then start with the map",
+                file=sys.stderr,
+            )
+            return 1
+        store_map, problem = _load_store_map(args.map, args.zones)
+        if problem:
+            print(f"error: {problem}", file=sys.stderr)
+            return 1
+
     engine = LiveEngine(
         source=args.source,
         width=args.width,
@@ -495,6 +563,7 @@ def _cmd_live(args: argparse.Namespace) -> int:
         min_arm_extension=args.min_arm_extension,
         floor_path=args.floor,
         position_interval=args.position_interval,
+        store_map=store_map,
     )
     app = create_app(engine)
 
@@ -503,6 +572,8 @@ def _cmd_live(args: argparse.Namespace) -> int:
     print(f"model    RF-DETR {args.variant} @ {args.resolution}px on {device}")
     print(f"pose     {'on' if args.pose else 'off'}")
     print(f"zones    {args.zones}")
+    if store_map is not None:
+        print(f"map      {args.map} (store {store_map.site})")
     print(f"db       {'disabled' if args.no_db else args.db}")
 
     replaying_file = not args.source.startswith("webcam:")
@@ -1206,7 +1277,7 @@ def _cmd_sessions(args: argparse.Namespace) -> int:
     # a dead fixture, zero reaches with pose off is nothing.
     header = (
         f"{'id':>4}  {'started':<25}  {'visits':>7}{'reaches':>8}"
-        f"{'positions':>10}{'zones':>7}{'pose':>6}  source"
+        f"{'positions':>10}{'zones':>7}{'pose':>6}  {'store':<14}source"
     )
     print(header)
     print("-" * len(header))
@@ -1215,7 +1286,7 @@ def _cmd_sessions(args: argparse.Namespace) -> int:
         print(
             f"{row['id']:>4}  {row['started_at']:<25}  {row['visits']:>7}"
             f"{row['reaches']:>8}{row['positions']:>10}{row['zones']:>7}{pose:>6}"
-            f"  {row['source']}"
+            f"  {(row['site'] or '-'):<14}{row['source']}"
         )
     return 0
 
@@ -1287,6 +1358,358 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         # Said plainly, because a difference that is not a result reads as one
         # to anybody skimming a table of numbers.
         print("\nThis is not a result. Do not plan against it.")
+    return 0
+
+
+def _cmd_storemap(args: argparse.Namespace) -> int:
+    """Check a store map against zones, and optionally record it on a session."""
+    from openv.storemap import StoreMap
+    from openv.zones import ZoneSet
+
+    try:
+        store_map = StoreMap.load(args.map)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    zones = None
+    session_id = None
+    if args.attach:
+        from openv.store import EventStore
+
+        if not Path(args.db).exists():
+            print(f"error: no database at {args.db}", file=sys.stderr)
+            return 1
+        with EventStore(args.db) as store:
+            session_id = args.session if args.session is not None else store.latest_session_id()
+            if session_id is None or store.session(session_id) is None:
+                print(f"error: no session {session_id} in {args.db}", file=sys.stderr)
+                return 1
+            # The session's own recorded zones are the ones its reaches were
+            # measured against, so they outrank any file passed alongside.
+            zones = store.session_zones(session_id)
+        if zones is None and not args.zones:
+            print(
+                f"error: session {session_id} did not record its zones, so the map "
+                "cannot be checked against them. Pass --zones",
+                file=sys.stderr,
+            )
+            return 1
+
+    if zones is None and args.zones:
+        try:
+            zones = ZoneSet.load(args.zones)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    name = f" ({store_map.name})" if store_map.name else ""
+    print(f"store    {store_map.site}{name}")
+    print(
+        f"map      {len(store_map.fixtures)} fixtures, {len(store_map.placements)} items, "
+        f"{len({p.brand for p in store_map.placements})} brands, "
+        f"{len({p.category for p in store_map.placements})} categories"
+    )
+    print()
+    for fixture in store_map.fixtures:
+        brands = fixture.brands
+        if not fixture.placements:
+            reads = "nothing on it"
+        elif len(brands) == 1:
+            reads = f"measures {brands[0]}"
+        else:
+            reads = f"shared by {len(brands)} brands, measures the zone only"
+        plan = "" if fixture.plan is not None else "  (no plan shape)"
+        print(f"  {fixture.zone:<24}{len(fixture.placements):>3} items   {reads}{plan}")
+
+    if zones is None:
+        print("\nnot checked against any zones. Pass --zones to check it.")
+        return 0
+
+    problems = store_map.problems(zones)
+    if problems:
+        print()
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 1
+
+    unmapped = store_map.unmapped(zones)
+    if unmapped:
+        print(f"\nshelf zones with nothing mapped onto them: {', '.join(unmapped)}")
+        print("Their zone numbers are still measured. They just have no products.")
+    shared = [f.zone for f in store_map.fixtures if len(f.brands) > 1]
+    if shared:
+        print(f"\nshared by more than one brand: {', '.join(shared)}")
+        print("A reach in a shared zone cannot be given to one brand, and is never")
+        print("split by facings. Draw a zone per section to measure a brand there.")
+    print("\nfits the zones.")
+
+    if args.attach:
+        from openv.store import EventStore
+
+        with EventStore(args.db) as store:
+            try:
+                store.attach_store_map(session_id, store_map, replace=args.replace)
+            except ValueError as exc:
+                print(f"error: {exc}. Pass --replace to overwrite it", file=sys.stderr)
+                return 1
+        print(f"recorded against session {session_id} in {args.db}.")
+        print("That is your statement that this map was on the shelves that day.")
+    return 0
+
+
+def _product_session(args: argparse.Namespace, store) -> int | None:
+    session_id = args.session if args.session is not None else store.latest_session_id()
+    if session_id is None or store.session(session_id) is None:
+        print(
+            "no sessions recorded yet"
+            if args.session is None
+            else f"error: no session {args.session} in {args.db}",
+            file=sys.stderr,
+        )
+        return None
+    return session_id
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    """The product and brand numbers for one session. Needs no model.
+
+    Prints a table, or with --out writes the anonymised JSON that is the thing
+    a retailer or a brand actually receives.
+    """
+    import json
+
+    from openv.export import ExportUnavailable, build_export, render
+    from openv.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        session_id = _product_session(args, store)
+        if session_id is None:
+            return 1
+        try:
+            export = build_export(
+                store, session_id, brand=args.brand, stop_threshold_s=args.stop_seconds
+            )
+        except ExportUnavailable as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.json:
+        print(json.dumps(export, indent=2))
+    else:
+        print(render(export))
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(export, indent=2), encoding="utf-8")
+        print(f"\nwritten  {out_path}", file=sys.stderr)
+        print(
+            "         aggregate counts only: no frames, no track ids, no positions.",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _cmd_rollup(args: argparse.Namespace) -> int:
+    """One brand or category across several stores' export files."""
+    import json
+
+    from openv.rollup import build_rollup, load_export, render
+
+    try:
+        rollup = build_rollup([load_export(p) for p in args.exports], by=args.by)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(rollup, indent=2) if args.json else render(rollup))
+    return 0
+
+
+def _cmd_planview(args: argparse.Namespace) -> int:
+    """Draw the store plan with each fixture coloured by its finding."""
+    from openv.planview import render_plan
+    from openv.products import analyze_products
+    from openv.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        session_id = _product_session(args, store)
+        if session_id is None:
+            return 1
+        products = analyze_products(store, session_id)
+        if products is None:
+            print(
+                f"error: session {session_id} has no store map recorded. Record "
+                "with `track --map`, or attach one with `storemap --attach`",
+                file=sys.stderr,
+            )
+            return 1
+        paths = store.paths(session_id)
+
+    try:
+        svg = render_plan(products, paths)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(svg, encoding="utf-8")
+    print(f"written  {out_path}")
+    if not paths:
+        print("         no floor positions in this session, so no traffic layer.")
+        print("         Record with --floor to get one.")
+    return 0
+
+
+def _cmd_demo_store(args: argparse.Namespace) -> int:
+    """Write two synthetic stores, so the product layer runs with no camera."""
+    from openv.demo import write_demo
+
+    try:
+        paths = write_demo(args.out)
+    except FileExistsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    first, second = paths["store-014"], paths["store-022"]
+    print(f"written  {first}")
+    print(f"         {second}")
+    print(f"         {paths['cameras']}")
+    print(f"         {paths['zones']}")
+    print(f"         {paths['map']}")
+    print("\nThese numbers are invented. They show what the commands say about a")
+    print("store shaped like this one, and are evidence of nothing else.")
+    print("\nnext:")
+    print(f"  uv run openv analyze --db {first}")
+    print(f"  uv run openv measure shelf-endcap --db {first}")
+    print(f"  uv run openv export --db {first}")
+    print(f"  uv run openv planview --db {first} --out {Path(args.out) / 'plan.svg'}")
+    cameras = paths["cameras"]
+    print("\nthree cameras over one store, fused into one 3D map:")
+    print(f"  uv run openv fuse --db {cameras}")
+    print(f"  uv run openv map3d --db {cameras} --out {Path(args.out) / 'map.html'}")
+    return 0
+
+
+def _cmd_fuse(args: argparse.Namespace) -> int:
+    """Join cameras recorded at the same time into store-wide paths."""
+    from openv.fusion import FusionRefused, fuse_sessions, simultaneous_sessions
+    from openv.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        sessions = args.sessions or simultaneous_sessions(store)
+        if len(sessions) < 2:
+            print(
+                "error: fusion needs at least two camera sessions recorded at the "
+                "same time, each with --floor. `openv sessions` lists what there is",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            fused, report = fuse_sessions(
+                store, sessions, same_start=args.same_start,
+                merge_radius=args.merge_radius, handoff_gap_s=args.handoff_seconds,
+            )
+        except FusionRefused as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    print(
+        f"fused sessions {', '.join(str(s) for s in sorted(set(sessions)))} "
+        f"into session {fused}\n"
+    )
+    print(f"camera tracks in        {report.camera_tracks:>5}")
+    print(f"fused shoppers out      {report.fused_tracks:>5}   (an upper bound)")
+    print(f"  joined in an overlap  {report.merged_in_overlap:>5}")
+    print(f"  handed across a gap   {report.handed_off:>5}")
+    print(f"  rejoined after a drop {report.rejoined:>5}")
+    print(f"  not guessed           {report.ambiguous:>5}")
+    print("\nJoined on floor position and time only. No appearance is used.")
+    if report.ambiguous:
+        print(
+            f"{report.ambiguous} time{'' if report.ambiguous == 1 else 's'} a camera "
+            "track could have been one of two shoppers. It was kept"
+        )
+        print("as a new track and not merged, which is why the count is an upper bound.")
+    print(f"\nnext:\n  uv run openv map3d --db {args.db} --out out/map.html")
+    return 0
+
+
+def _cmd_map3d(args: argparse.Namespace) -> int:
+    """The 3D store map: a replay written to one HTML file, or a live server."""
+    from openv.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    if args.live:
+        import threading
+        import webbrowser
+
+        import uvicorn
+
+        from openv.mapview import LiveMap, create_map_app
+
+        url = f"http://127.0.0.1:{args.port}"
+        print(f"db       {args.db}")
+        print("cameras  every session writing floor positions to that store")
+        print("         run each as its own `openv live --floor ... --db` process")
+        print(f"\nopen     {url}\n")
+        if not args.no_browser:
+            threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        uvicorn.run(
+            create_map_app(LiveMap(args.db)), host="127.0.0.1", port=args.port,
+            log_level="warning",
+        )
+        return 0
+
+    from openv.mapview import build_scene, render_html
+
+    with EventStore(args.db) as store:
+        session_id = args.session
+        if session_id is None:
+            # A fused session is the whole store, so it is what a person
+            # asking for "the map" means when there is one.
+            session_id = store.latest_fused_session()
+        if session_id is None:
+            with_positions = [s["id"] for s in store.sessions() if s["positions"]]
+            session_id = with_positions[0] if with_positions else None
+        if session_id is None:
+            print(
+                "error: no session has floor positions. Record with --floor, "
+                "then `openv fuse` if there is more than one camera",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            scene = build_scene(store, session_id)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(render_html(scene), encoding="utf-8")
+    print(f"written  {out_path}  ({scene['caption']})")
+    print(f"         {scene['shoppers']} tracks, {len(scene['cameras'])} camera views, "
+          f"{len(scene['fixtures'])} fixtures")
+    print("         one file, nothing fetched. Open it in a browser.")
+    print("         It shows positions, so it is for the store and is not an export.")
     return 0
 
 
@@ -1708,6 +2131,11 @@ def main(argv: list[str] | None = None) -> int:
         "dwell are fine at 1Hz and per-frame rows buy nothing (default: 1.0)",
     )
     track.add_argument(
+        "--map",
+        help="store map JSON: what is on each shelf zone. Recorded with the "
+        "session so reaches can be read as products and brands",
+    )
+    track.add_argument(
         "--db", default="out/openv.db", help="event store path (default: out/openv.db)"
     )
     track.add_argument(
@@ -1757,6 +2185,10 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=1.0,
         help="seconds between floor position samples per shopper (default: 1.0)",
+    )
+    live.add_argument(
+        "--map",
+        help="store map JSON: what is on each shelf zone, recorded with the session",
     )
     live.add_argument(
         "--db", default="out/openv.db", help="event store for the live session"
@@ -1924,6 +2356,105 @@ def main(argv: list[str] | None = None) -> int:
     sessions = sub.add_parser("sessions", help="list recorded sessions")
     sessions.add_argument("--db", default="out/openv.db", help="event store to read")
     sessions.set_defaults(func=_cmd_sessions)
+
+    storemap = sub.add_parser(
+        "storemap", help="check a store map against zones, or record it on a session"
+    )
+    storemap.add_argument("map", help="store map JSON: fixtures and the products on them")
+    storemap.add_argument("--zones", help="zones.json to check the map against")
+    storemap.add_argument(
+        "--attach",
+        action="store_true",
+        help="record this map against a session that was captured without one",
+    )
+    storemap.add_argument("--db", default="out/openv.db", help="event store, with --attach")
+    storemap.add_argument("--session", type=int, help="session to attach to (default: latest)")
+    storemap.add_argument(
+        "--replace", action="store_true", help="overwrite a map the session already has"
+    )
+    storemap.set_defaults(func=_cmd_storemap)
+
+    export = sub.add_parser(
+        "export", help="product and brand numbers for a session, as a table or JSON"
+    )
+    export.add_argument("--db", default="out/openv.db", help="event store to read")
+    export.add_argument("--session", type=int, help="session to export (default: latest)")
+    export.add_argument(
+        "--brand", help="narrow to one brand: its zones, its items, its category"
+    )
+    export.add_argument("--out", help="write the anonymised JSON export here")
+    export.add_argument("--json", action="store_true", help="print JSON, not a table")
+    export.add_argument(
+        "--stop-seconds", type=float, default=2.0, help="dwell that counts as a stop"
+    )
+    export.set_defaults(func=_cmd_export)
+
+    rollup = sub.add_parser(
+        "rollup", help="one brand or category across several stores' exports"
+    )
+    rollup.add_argument("exports", nargs="+", help="export JSON files from `openv export --out`")
+    rollup.add_argument(
+        "--by", choices=["brand", "category"], default="brand", help="what to group on"
+    )
+    rollup.add_argument("--json", action="store_true", help="print JSON, not a table")
+    rollup.set_defaults(func=_cmd_rollup)
+
+    planview = sub.add_parser(
+        "planview", help="draw the store plan, fixtures coloured by finding"
+    )
+    planview.add_argument("--db", default="out/openv.db", help="event store to read")
+    planview.add_argument("--session", type=int, help="session to draw (default: latest)")
+    planview.add_argument("--out", default="out/plan.svg", help="where to write the SVG")
+    planview.set_defaults(func=_cmd_planview)
+
+    fuse_p = sub.add_parser(
+        "fuse", help="join cameras recorded at the same time into store-wide paths"
+    )
+    fuse_p.add_argument("--db", default="out/openv.db", help="event store to read")
+    fuse_p.add_argument(
+        "--sessions", type=int, nargs="+",
+        help="camera sessions to fuse (default: the newest and those recorded with it)",
+    )
+    fuse_p.add_argument(
+        "--same-start", action="store_true",
+        help="the recordings began together. For footage processed after the "
+        "fact, whose session times are when it was processed",
+    )
+    fuse_p.add_argument(
+        "--merge-radius", type=float, default=0.8,
+        help="how far apart two cameras may place one shopper, in floor units "
+        "(default: 0.8)",
+    )
+    fuse_p.add_argument(
+        "--handoff-seconds", type=float, default=4.0,
+        help="how long a shopper can be out of every view and still be the "
+        "same track (default: 4)",
+    )
+    fuse_p.set_defaults(func=_cmd_fuse)
+
+    map3d = sub.add_parser(
+        "map3d", help="the 3D store map: fixtures, camera views and shoppers"
+    )
+    map3d.add_argument("--db", default="out/openv.db", help="event store to read")
+    map3d.add_argument(
+        "--session", type=int,
+        help="session to replay (default: the newest fused session, else the newest)",
+    )
+    map3d.add_argument("--out", default="out/map.html", help="where to write the replay")
+    map3d.add_argument(
+        "--live", action="store_true",
+        help="serve a live map, fusing every camera writing to the store",
+    )
+    map3d.add_argument("--port", type=int, default=8010)
+    map3d.add_argument("--no-browser", action="store_true", help="do not auto-open")
+    map3d.set_defaults(func=_cmd_map3d)
+
+    demo = sub.add_parser(
+        "demo-store",
+        help="write two synthetic stores to try the product layer with no camera",
+    )
+    demo.add_argument("--out", default="out/demo", help="directory to write into")
+    demo.set_defaults(func=_cmd_demo_store)
 
     threads = sub.add_parser("threads", help="list or read saved conversations")
     threads.add_argument("--db", default="out/openv.db", help="event store to read")

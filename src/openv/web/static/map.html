@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>openv · store map</title>
+<!--THEME-->
+<style>
+  .app{position:fixed; inset:0; display:grid; grid-template-rows:38px 1fr 46px}
+  .bar{
+    display:flex; align-items:center; gap:18px; padding:0 14px;
+    background:var(--panel); border-bottom:1px solid var(--line);
+  }
+  .bar .sp{flex:1}
+  .crumb{color:var(--dim); font-size:10px; letter-spacing:.14em; text-transform:uppercase}
+  .crumb b{color:var(--fg); font-weight:500}
+  .status{display:inline-flex; align-items:center; gap:7px; font-size:10px;
+          letter-spacing:.14em; text-transform:uppercase; color:var(--dim)}
+  .status i{width:6px; height:6px; background:var(--dimmer)}
+  .status.on i{background:var(--good); box-shadow:0 0 10px var(--good)}
+  .status.on{color:var(--fg)}
+
+  .stage{position:relative; min-height:0; overflow:hidden;
+         background:radial-gradient(ellipse at 50% 38%, #0d1218 0%, var(--bg) 70%)}
+  #map{position:absolute; inset:0; width:100%; height:100%; cursor:grab; touch-action:none}
+  #map:active{cursor:grabbing}
+
+  .panel{
+    position:absolute; background:rgba(12,15,19,.88); border:1px solid var(--line2);
+    backdrop-filter:blur(3px);
+  }
+  .panel h2{
+    margin:0; padding:7px 11px 6px; font-size:9px; font-weight:500; letter-spacing:.2em;
+    text-transform:uppercase; color:var(--dimmer); border-bottom:1px solid var(--line);
+  }
+  .left{left:14px; top:14px; width:232px}
+  .right{right:14px; top:14px; width:300px; max-height:calc(100% - 28px); overflow-y:auto}
+  .kpis{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line)}
+  .kpi{background:rgba(12,15,19,.96); padding:9px 11px}
+  .kpi b{display:block; font-size:21px; font-weight:500; letter-spacing:-.02em; color:var(--fg)}
+  .kpi b.live{color:var(--accent)}
+  .kpi span{font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--dimmer)}
+  .rows{padding:6px 11px 9px; color:var(--dim); font-size:10.5px}
+  .rows div{display:flex; justify-content:space-between; padding:2px 0}
+  .rows b{color:var(--fg); font-weight:400}
+  .note{padding:7px 11px 9px; color:var(--dimmer); font-size:10px; line-height:1.5;
+        border-top:1px solid var(--line)}
+
+  .fx{display:grid; grid-template-columns:3px 1fr auto; gap:9px; padding:7px 11px;
+      border-top:1px solid var(--line); cursor:default}
+  .fx:first-of-type{border-top:0}
+  .fx:hover{background:rgba(255,255,255,.03)}
+  .fx i{align-self:stretch}
+  .fx .n{color:var(--fg); letter-spacing:.06em; text-transform:uppercase; font-size:10.5px}
+  .fx .s{color:var(--dimmer); font-size:10px; margin-top:2px}
+  .fx .r{text-align:right; font-size:15px; color:var(--fg)}
+  .fx .r small{display:block; font-size:9px; color:var(--dimmer); letter-spacing:.1em}
+  .cams{padding:7px 11px 9px; display:flex; flex-wrap:wrap; gap:6px 12px; font-size:10px;
+        color:var(--dim); letter-spacing:.1em; text-transform:uppercase;
+        border-top:1px solid var(--line)}
+  .cams i{display:inline-block; width:10px; height:2px; vertical-align:middle; margin-right:6px}
+
+  .deck{
+    display:flex; align-items:center; gap:14px; padding:0 14px;
+    background:var(--panel); border-top:1px solid var(--line);
+  }
+  .clock{font-size:13px; color:var(--fg); min-width:92px}
+  .clock small{color:var(--dimmer); font-size:9px; letter-spacing:.14em; margin-right:6px}
+  input[type=range]{
+    flex:1; -webkit-appearance:none; appearance:none; height:2px; background:var(--line2);
+    outline:none; margin:0;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:9px; height:15px; background:var(--accent); cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb{
+    width:9px; height:15px; border:0; border-radius:0; background:var(--accent); cursor:pointer;
+  }
+  .hint{color:var(--dimmer); font-size:9px; letter-spacing:.14em; text-transform:uppercase}
+  @media (max-width:860px){ .right{display:none} .left{width:200px} }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="bar">
+    <span class="brand">openv</span>
+    <span class="crumb">store map / <b id="site"></b></span>
+    <span class="crumb" id="sess"></span>
+    <span class="sp"></span>
+    <button id="camBtn" class="ghost on">camera views</button>
+    <button id="trailBtn" class="ghost on">trails</button>
+    <span class="status" id="status"><i></i><span id="statusTxt">replay</span></span>
+  </div>
+
+  <div class="stage">
+    <canvas id="map"></canvas>
+
+    <div class="panel left ticks">
+      <h2>floor</h2>
+      <div class="kpis">
+        <div class="kpi"><b class="live" id="onFloor">0</b><span>on floor now</span></div>
+        <div class="kpi"><b id="camCount">0</b><span>cameras</span></div>
+        <div class="kpi"><b id="shoppers">0</b><span>shoppers seen</span></div>
+        <div class="kpi"><b id="fused">0</b><span>on 2+ cameras</span></div>
+      </div>
+      <div class="rows" id="fusionRows"></div>
+      <div class="note" id="note"></div>
+    </div>
+
+    <div class="panel right ticks">
+      <h2>fixtures</h2>
+      <div id="fixtures"></div>
+      <div class="cams" id="cams"></div>
+    </div>
+  </div>
+
+  <div class="deck">
+    <button id="playBtn" class="on">pause</button>
+    <button id="speedBtn">8x</button>
+    <span class="clock"><small>T+</small><span id="clock">00:00</span></span>
+    <input type="range" id="scrub" min="0" max="1000" value="0">
+    <span class="hint">drag to orbit · shift-drag to pan · scroll to zoom</span>
+  </div>
+</div>
+
+<!--SCENE-->
+<!--SCRIPT-->
+<script>
+(async function(){
+  const CAMERA_COLOURS = ['#6fd6ff','#b48cff','#ffd166','#5eead4','#ff8fab','#a3e635'];
+  const SEVERITY = {high:'var(--high)', medium:'var(--medium)', low:'var(--good)', none:'var(--neutral)'};
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  const live = !window.OPENV_SCENE;
+  let scene = window.OPENV_SCENE || await (await fetch('/api/scene')).json();
+  const map = new StoreMap3D($('map'), scene);
+
+  function apply(next){
+    scene = next;
+    $('site').textContent = scene.site.name || scene.site.id;
+    $('sess').textContent = scene.caption;
+    $('camCount').textContent = scene.cameras.length;
+    $('note').textContent = scene.note;
+    $('fusionRows').innerHTML = (scene.fusion || []).map(r =>
+      `<div><span>${esc(r[0])}</span><b>${esc(r[1])}</b></div>`).join('');
+    $('fixtures').innerHTML = scene.fixtures.map(f => `
+      <div class="fx" data-zone="${esc(f.zone)}">
+        <i style="background:${f.measured ? SEVERITY[f.severity] : 'var(--line2)'}"></i>
+        <div><div class="n">${esc(f.label || f.zone)}</div>
+             <div class="s">${esc(f.brands.join(' / ') || 'nothing mapped')}</div></div>
+        <div class="r">${esc(f.rate)}<small>${esc(f.counts)}</small></div>
+      </div>`).join('') || '<div class="note">no store map recorded</div>';
+    document.querySelectorAll('.fx').forEach(el => {
+      el.onmouseenter = () => { map.hover = el.dataset.zone; map.draw(); };
+      el.onmouseleave = () => { map.hover = null; map.draw(); };
+    });
+    $('cams').innerHTML = scene.cameras.map((c,i) =>
+      `<span><i style="background:${CAMERA_COLOURS[i % CAMERA_COLOURS.length]}"></i>${esc(c.label)}</span>`
+    ).join('');
+  }
+  apply(scene);
+  $('shoppers').textContent = scene.shoppers;
+
+  $('camBtn').onclick = e => { map.showCameras = !map.showCameras;
+    e.target.classList.toggle('on', map.showCameras); map.draw(); };
+  $('trailBtn').onclick = e => { map.showTrails = !map.showTrails;
+    e.target.classList.toggle('on', map.showTrails); map.draw(); };
+
+  const clock = s => {
+    s = Math.max(0, Math.floor(s));
+    return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+  };
+  const show = people => {
+    $('onFloor').textContent = people;
+    $('fused').textContent = map.people.filter(p => (p.cameras || 1) > 1).length;
+  };
+
+  if (live){
+    // Live: the server tails the event store and fuses whatever cameras are
+    // writing to it. This page only draws what it is sent.
+    $('status').classList.add('on');
+    $('statusTxt').textContent = 'live';
+    $('playBtn').style.display = $('speedBtn').style.display = $('scrub').style.display = 'none';
+    const started = performance.now();
+    async function poll(){
+      try {
+        const s = await (await fetch('/api/live')).json();
+        show(map.setLive(s.positions, performance.now() / 1000));
+        $('shoppers').textContent = s.shoppers;
+        $('camCount').textContent = s.cameras;
+        $('clock').textContent = clock((performance.now() - started) / 1000);
+        $('status').classList.toggle('on', s.cameras > 0);
+        $('statusTxt').textContent = s.cameras > 0 ? 'live' : 'no camera writing';
+      } catch (e) {
+        $('status').classList.remove('on'); $('statusTxt').textContent = 'offline';
+      }
+    }
+    setInterval(poll, 500); poll();
+    // Cameras come and go while the page is open, and each one brings its
+    // own patch of floor and its own findings.
+    setInterval(async () => {
+      try {
+        const next = await (await fetch('/api/scene')).json();
+        if (JSON.stringify(next) !== JSON.stringify(scene)){ apply(next); map.setScene(next); }
+      } catch (e) { /* the next tick retries */ }
+    }, 4000);
+    return;
+  }
+
+  // Replay of a recorded session.
+  const speeds = [1, 4, 8, 20];
+  let speed = 8, playing = true, t = window.OPENV_START || 0, last = performance.now();
+  const scrub = $('scrub');
+  const seek = v => { t = Math.min(scene.duration, Math.max(0, v));
+    show(map.setTime(t)); $('clock').textContent = clock(t);
+    scrub.value = Math.round(t / scene.duration * 1000); };
+  scrub.oninput = () => seek(scrub.value / 1000 * scene.duration);
+  $('playBtn').onclick = e => { playing = !playing; last = performance.now();
+    e.target.classList.toggle('on', playing); e.target.textContent = playing ? 'pause' : 'play'; };
+  $('speedBtn').onclick = e => { speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length];
+    e.target.textContent = speed + 'x'; };
+  function frame(now){
+    if (playing){
+      const next = t + (now - last) / 1000 * speed;
+      seek(next >= scene.duration ? 0 : next);
+    }
+    last = now;
+    requestAnimationFrame(frame);
+  }
+  seek(t);
+  if (window.OPENV_PAUSED){
+    playing = false;
+    $('playBtn').classList.remove('on'); $('playBtn').textContent = 'play';
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
