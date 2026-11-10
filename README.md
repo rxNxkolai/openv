@@ -12,6 +12,10 @@ numbers to the retailer and to the brands on that shelf.
 
 The cameras are the sensor. The store map is the retailer's. The agent is the product.
 
+![The OpenV 3D store map: fixtures as blocks coloured by finding, three camera views outlined on the floor, and fused shoppers as markers with trails](docs/map3d.png)
+
+*The 3D store map on the synthetic demo store. Three cameras are fused into one floor: each camera's view is a dashed outline, each fixture is coloured by its finding, and each marker is a shopper where the fused tracks put them. The white marker is a shopper two cameras are watching at once. Written by `openv map3d`.*
+
 ![OpenV on the grocery sample: two shelf zones, one aisle zone, a tracked shopper reaching into the left shelf](docs/grocery-tracked.jpg)
 
 *The bundled grocery clip with zones drawn and pose on. Shelf zones are tested against wrists, the aisle against foot points. The hand is inside `left-shelf` here and the reach is recorded once it ends, 0.6 seconds later. Same renderer as `openv track --out`.*
@@ -22,6 +26,7 @@ The cameras are the sensor. The store map is the retailer's. The agent is the pr
 |---|---|---|
 | Traffic | people detected and tracked per camera, counted per zone | `openv track` |
 | Path and speed | foot points projected onto the store floor plan, sampled at 1Hz | `--floor` |
+| Store-wide paths | every camera fused into one floor, on position and time only | `openv fuse` |
 | Dwell and stops | one continuous stay per shopper per zone, debounced | `--zones` |
 | Reaches | a wrist inside a shelf zone with the arm extended | `--pose` |
 | Funnel | passed, stopped, reached per shelf, ranked against the store's own median | `openv analyze` |
@@ -37,6 +42,7 @@ OpenV stops at behaviour. The items below are left out by construction, and
 - **No faces and no biometric identifier.** No face embedding is computed, stored or sent.
 - **No demographic guess and no emotion inference.** Contested science, and prohibited ground under the EU AI Act.
 - **No identity across visits.** A track id lives for one session and dies when the shopper leaves frame. Nothing links Monday's shopper to Tuesday's, or one store's to another's.
+- **No appearance matching between cameras.** Cameras are joined by where a shopper stands and when. Nothing about how a shopper looks is compared, stored or computed.
 - **No retained video.** Frames exist in the processing buffer and nowhere else.
 - **No product recognition by camera.** A ceiling camera cannot read a label reliably. Products come from the store map.
 
@@ -54,15 +60,16 @@ and the precise claims.
 | M2 | Pose and reach detection | done, specificity validated, sensitivity open |
 | M3 | Analysis and agent | done, agent path unrun |
 | M4 | Live camera, browser console | done in software, unrun on a real fixed camera |
-| M5 | Floor coordinates, plan view | done bar multi-camera |
+| M5 | Floor coordinates, camera fusion, 3D store map | built, fusion verified on synthetic cameras, unrun on real ones |
 | M6 | Agent tools and chat | built and tested against a scripted client, unrun live |
 | M7 | Re-measurement, digest, webhook | done |
 | M8 | Store map, product and brand numbers, export | done on synthetic data, unrun with a retailer's planogram |
 | M9 | Multi-store | rollup across export files done, shared database not started |
 
-What is still open is not code: a real fixed camera in a store, a live run of
-the agent with credentials, footage of a reach with the whole body in frame,
-and a retailer's own planogram. [docs/roadmap.md](docs/roadmap.md) has the
+What is still open is not code: a real fixed camera in a store, two real
+cameras with overlapping views, a live run of the agent with credentials,
+footage of a reach with the whole body in frame, and a retailer's own
+planogram. [docs/roadmap.md](docs/roadmap.md) has the
 detail and the order.
 
 ## Try it with no camera
@@ -82,6 +89,13 @@ uv run openv analyze --db out/demo/store-014.db
 uv run openv measure shelf-endcap --db out/demo/store-014.db
 uv run openv export --db out/demo/store-014.db --session 1
 uv run openv planview --db out/demo/store-014.db --session 1 --out out/demo/plan.svg
+```
+
+The same demo has one store seen by three cameras. Fuse them and open the map:
+
+```bash
+uv run openv fuse --db out/demo/cameras.db
+uv run openv map3d --db out/demo/cameras.db --out out/demo/map.html
 ```
 
 The demo numbers are invented and labelled `synthetic` in the store. They show
@@ -139,6 +153,9 @@ number meaningless against the clock the viewer is watching.
 | `--pose` | enable reach detection on shelf zones |
 | `--floor` | floor.json, adds the plan view and records positions |
 | `--map` | store map JSON, recorded with the session so reaches read as products |
+
+With `--floor`, a `3d map` button appears in the console and swaps the camera
+feed for the 3D store map of that camera's floor. A store map adds the fixtures.
 | `--db PATH` | event store for the session (default `out/openv.db`) |
 | `--no-db` | do not persist; numbers vanish on exit |
 | `--no-loop` | stop at the end of a video file instead of rewinding |
@@ -655,6 +672,135 @@ above the ankle does, which is the foot-point rule made visible.
 This is the layer a multi-camera bird's-eye view sits on: several cameras
 sharing one floor coordinate space.
 
+## Several cameras, one floor (M5)
+
+Every camera with a floor calibration reports shoppers in the same coordinate
+space, the store's own plan. Fusion is the step after that: deciding that the
+dot one camera calls track 7 and the dot another calls track 3 are one shopper
+standing where their views overlap.
+
+Run each camera against the same event store, each with its own calibration:
+
+```bash
+uv run openv live --source webcam:0 --floor data/cam-a.floor.json --db out/store.db
+uv run openv live --source webcam:1 --floor data/cam-b.floor.json --db out/store.db --port 8001
+```
+
+Then join what they recorded:
+
+```bash
+uv run openv fuse --db out/store.db
+```
+
+<!-- demo-fuse -->
+```
+fused sessions 1, 2, 3 into session 4
+
+camera tracks in          354
+fused shoppers out        123   (an upper bound)
+  joined in an overlap    214
+  handed across a gap       6
+  rejoined after a drop    11
+  not guessed              10
+```
+
+With no sessions named it takes the newest camera session and every camera
+session recorded alongside it. The fused session then reads as the whole store:
+`openv analyze`, `openv export` and `openv planview` all work on it, each
+zone's funnel comes from the camera that measured it, and a brand with shelves
+under two cameras counts a shopper who passed both once.
+
+### It joins on position and time, and on nothing else
+
+Two observations are the same shopper when they are at the same place on the
+floor at the same moment. No crop, no colour and no model is involved, and the
+input to fusion has five fields: camera, track id, time, x and y. A test holds
+it to those five.
+
+Joining a shopper across cameras is a form of re-identification, and this is
+where the line sits. Matching on position and time keeps the privacy posture.
+Matching on appearance does not, and it is the surface biometric litigation
+targets. That choice has a cost, and the cost is stated:
+
+- **Two shoppers close together at a seam are not guessed.** When a new camera
+  track could be either of two shoppers, a new track starts and the event is
+  counted. That splits one shopper in two and inflates the count. The other
+  error is blending two shoppers into one and handing each the other's path,
+  and an overcount that says so is the better mistake.
+- **A new camera track is placed about a second late.** Cameras sample a
+  shopper once a second and out of step with each other. Deciding on arrival
+  means predicting up to a second ahead, and somebody turning into an aisle is
+  over a metre from where a straight line put them. Waiting one sample turns
+  that prediction into an interpolation between two things that were seen.
+- **A doorway needs direction as well as place.** One shopper walks out and
+  another walks in through the same metre of floor two seconds later. By place
+  and time they are one dot. A pickup across a gap also has to agree on
+  direction of travel, and is refused when there is no direction to compare.
+- **Only cameras recording together are fused.** Sessions that do not overlap
+  in time are refused: joining them would link one visit to another. Footage
+  processed after the fact carries the time it was processed, so `--same-start`
+  is how you state that two recordings began together.
+
+Scored against ground truth on the synthetic store, over ten runs: 1,100
+shoppers, three overlapping cameras, one doorway. **No fused track held two
+shoppers. 85% of shoppers came out as one track across all three cameras. The
+count ran 16% high**, all of it from tracks that were split and none from
+tracks that were merged. Before the direction rule the count was within 5% of
+the truth and about 8% of tracks were blends of two people, which is the
+failure a matching count hides.
+
+That is a simulation with clean calibrations. Real cameras disagree about
+where the floor is, and their clocks drift. `--merge-radius` is the allowance
+for the first, and a session's start time is kept to the millisecond for the
+second. Neither has been tested on two real cameras yet.
+
+## The 3D store map
+
+```bash
+uv run openv map3d --db out/store.db --out out/map.html
+```
+
+One HTML file with the store in it: the floor plan as a grid, fixtures as
+blocks coloured by their finding, each camera's view outlined on the floor, and
+shoppers as markers replaying where the tracks put them. Drag to orbit, scroll
+to zoom, scrub the timeline. It fetches nothing, so it opens from disk on a
+machine with no network. It replays the newest fused session when there is one.
+
+For a live floor, serve it:
+
+```bash
+uv run openv map3d --db out/store.db --live
+```
+
+Each camera runs as its own process writing to the store. The map server tails
+the store, puts every camera on one clock, fuses what arrives, and draws the
+result. Cameras appear on the map as they start writing. Positions that were in
+the store before the map started are history and are not replayed onto it.
+
+A marker is white when two or more cameras are watching that shopper at once.
+
+**The map shows positions, so it is for the people running the store and is not
+an export.** A marker is one shopper's place at one moment: the same anonymous
+floor coordinate the event store already holds. Markers are numbered within the
+scene and carry no stored id. Nothing that goes to a third party is built from
+it. `openv export` and `openv planview` are the aggregate views.
+
+It is drawn on a plain canvas with its own projection. A store is a few dozen
+polygons and a few dozen markers, which does not need a 3D engine, and the
+console has to load on an edge box with no network and no bundle.
+
+### Theme
+
+Every surface uses one set of tokens in `src/openv/web/static/theme.css`: near
+black, hairline rules, uppercase micro-labels, monospace for anything that is a
+measurement, one accent for what is live, and red, amber and green kept for
+severity alone. The plan drawing writes the same values into its SVG.
+
+No font files ship with it. The stacks name the faces to use when they are
+installed and fall through to what the machine has. To restyle everything, put
+a `brand.css` beside `theme.css` and override the tokens. The server loads it
+after the theme when it exists, along with anything in a `fonts` folder there.
+
 ## Store map and product numbers (M8)
 
 OpenV measures zones. The retailer already knows what is on every shelf: that is
@@ -778,7 +924,8 @@ uv run openv planview --db out/openv.db --out out/plan.svg
 
 *The synthetic demo store. Fixtures are coloured by their finding, and the blue
 layer is foot traffic from recorded floor positions. The drawing is an SVG built
-from aggregates: no camera pixels, and no track behind any cell.*
+from aggregates: no camera pixels, and no track behind any cell. It is the
+aggregate counterpart of the 3D map, and the one that can be handed on.*
 
 Fixtures need a `plan` polygon to be drawn, and the traffic layer needs a
 session recorded with `--floor`.

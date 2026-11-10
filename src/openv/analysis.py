@@ -280,6 +280,11 @@ def analyze(
     could not mention: no reach rows meant no row at all, so the worse a
     fixture performed the less was said about it.
     """
+    if session_id is not None:
+        members = [m for m, _ in store.fusion_members(session_id)]
+        if members:
+            return _analyze_fused(store, session_id, members, stop_threshold_s)
+
     pairs = store.shelf_floor_pairs(session_id)
     floor_rows = {r["zone"]: r for r in store.zone_summary(session_id)}
     reach_rows = {r["zone"]: r for r in store.reach_summary(session_id)}
@@ -328,7 +333,16 @@ def analyze(
     ]
     median_reach = statistics.median(rates) if rates else None
 
-    findings = tuple(
+    return StoreAnalysis(
+        session_id=session_id,
+        findings=_rank(funnels, median_reach),
+        median_reach_rate=median_reach,
+        total_shoppers=store.total_shoppers(session_id),
+    )
+
+
+def _rank(funnels: list[ZoneFunnel], median_reach: float | None) -> tuple[Finding, ...]:
+    return tuple(
         sorted(
             (assess(f, median_reach) for f in funnels),
             key=lambda f: (
@@ -338,11 +352,39 @@ def analyze(
         )
     )
 
+
+def _analyze_fused(
+    store: EventStore, session_id: int, members: list[int], stop_threshold_s: float
+) -> StoreAnalysis:
+    """A fused session read as the whole store.
+
+    Each zone's funnel is the one its own camera measured, against the zones
+    that camera was given. Nothing about a zone is recomputed here. What
+    changes is the comparison: the median is taken across every camera's
+    shelves, so a shelf is ranked against the store and not against the two
+    other shelves that happened to share its camera. And the shopper count is
+    the number of fused tracks, which is the one figure no single camera has.
+    """
+    funnels: dict[str, ZoneFunnel] = {}
+    for member in members:
+        for finding in analyze(store, member, stop_threshold_s).findings:
+            funnel = finding.funnel
+            known = funnels.get(funnel.shelf_zone)
+            # Two cameras given the same zone name: keep whichever saw more
+            # shoppers pass it. Adding them would count the overlap twice.
+            if known is None or funnel.passed > known.passed:
+                funnels[funnel.shelf_zone] = funnel
+
+    rates = [
+        f.reach_rate for f in funnels.values()
+        if f.reach_rate is not None and f.has_confidence
+    ]
+    median_reach = statistics.median(rates) if rates else None
     return StoreAnalysis(
         session_id=session_id,
-        findings=findings,
+        findings=_rank(list(funnels.values()), median_reach),
         median_reach_rate=median_reach,
-        total_shoppers=store.total_shoppers(session_id),
+        total_shoppers=store.fused_shoppers(session_id),
     )
 
 

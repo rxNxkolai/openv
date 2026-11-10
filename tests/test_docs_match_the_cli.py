@@ -136,3 +136,20 @@ def test_the_export_table_in_the_readme_is_what_the_demo_store_prints(tmp_path, 
     # The first line carries the time the store was written, so it differs.
     missing = [line for line in quoted[1:] if line not in printed]
     assert missing == [], f"the README quotes lines the demo does not print: {missing}"
+
+
+def test_the_fusion_output_in_the_readme_is_what_the_demo_cameras_print(tmp_path, capsys):
+    """Same reason as the export table: the README argues from these counts."""
+    block = re.search(r"<!-- demo-fuse -->\n```\n(.*?)```", README, re.DOTALL)
+    assert block, "the README lost its demo fusion output"
+    quoted = [line for line in block.group(1).splitlines() if line.strip()]
+    assert len(quoted) >= 6
+
+    out = tmp_path / "demo"
+    assert main(["demo-store", "--out", str(out)]) == 0
+    capsys.readouterr()
+    assert main(["fuse", "--db", str(out / "cameras.db")]) == 0
+    printed = capsys.readouterr().out.splitlines()
+
+    missing = [line for line in quoted if line not in printed]
+    assert missing == [], f"the README quotes lines the demo does not print: {missing}"

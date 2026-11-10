@@ -276,6 +276,11 @@ def _rollup_finding(
     """
     if not zones:
         return None
+    if len(zones) == 1:
+        # One zone: the brand's funnel is that zone's funnel and nothing is
+        # recounted, so the two can never disagree by a shopper.
+        funnel = replace(by_zone[zones[0]].funnel, shelf_zone=name, paired_by=None)
+        return _reword(assess(funnel, median_reach), name, 1)
 
     floors = sorted(
         {by_zone[z].funnel.floor_zone for z in zones if by_zone[z].funnel.floor_zone}
@@ -290,15 +295,18 @@ def _rollup_finding(
         # number nobody could reproduce by hand, and it is not needed here.
         mean_dwell_s=0.0,
     )
-    finding = assess(funnel, median_reach)
-    if finding.kind == "dead":
-        # `assess` words this for a fixture. The numbers are the same.
-        where = "its shelf" if len(zones) == 1 else f"its {len(zones)} shelves"
-        finding = replace(
-            finding,
-            headline=(
-                f"{name}: {funnel.passed} shoppers walked past {where} "
-                "and not one reached"
-            ),
-        )
-    return finding
+    return _reword(assess(funnel, median_reach), name, len(zones))
+
+
+def _reword(finding: Finding, name: str, zones: int) -> Finding:
+    if finding.kind != "dead":
+        return finding
+    # `assess` words this for a fixture. The numbers are the same.
+    where = "its shelf" if zones == 1 else f"its {zones} shelves"
+    return replace(
+        finding,
+        headline=(
+            f"{name}: {finding.funnel.passed} shoppers walked past {where} "
+            "and not one reached"
+        ),
+    )

@@ -1,0 +1,83 @@
+/* OpenV theme.
+
+   One set of tokens for every surface: the live console, the 3D store map and
+   the plan drawing. Dark, flat, hairline rules, uppercase micro-labels, and
+   monospace for anything that is a measurement.
+
+   No font files ship with this. The stacks below name the faces to use when
+   they are installed and fall through to what the machine has, so the console
+   works on an edge box with no network. Drop a `brand.css` beside this file to
+   override any token; the server loads it after this one when it exists. */
+
+:root{
+  --bg:#07090b;
+  --panel:#0c0f13;
+  --panel2:#11151a;
+  --line:#1a2028;
+  --line2:#2a323d;
+  --fg:#dfe5ec;
+  --dim:#8492a3;
+  --dimmer:#55606e;
+
+  /* One accent. It marks what is live: a shopper, a selection, a running feed. */
+  --accent:#6fd6ff;
+  --accent-ink:#04121a;
+
+  /* Intent colours carry severity and nothing else. */
+  --high:#ff5a5f;
+  --medium:#ffb224;
+  --good:#3ddc97;
+  --neutral:#6b7785;
+
+  /* Aliases the live console was written against. */
+  --cyan:var(--accent);
+
+  --mono:"Berkeley Mono","JetBrains Mono","IBM Plex Mono",ui-monospace,
+         SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:"Inter Tight","Inter","Helvetica Neue",Helvetica,Arial,system-ui,sans-serif;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:12px/1.45 var(--mono);
+  -webkit-font-smoothing:antialiased;
+  font-feature-settings:"tnum" 1,"zero" 1;
+}
+
+/* The wordmark: sans, wide tracking, with a slashed prefix. */
+.brand{
+  font-family:var(--sans); font-weight:600; font-size:11px;
+  letter-spacing:.32em; text-transform:uppercase; color:var(--fg);
+}
+.brand::before{content:"// "; color:var(--accent); letter-spacing:0}
+
+.label{
+  font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--dimmer);
+}
+
+button,.btn{
+  font:inherit; font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+  background:transparent; color:var(--dim); border:1px solid var(--line2);
+  padding:4px 10px; cursor:pointer; border-radius:0;
+}
+button:hover{color:var(--fg); border-color:var(--dim)}
+button.on{color:var(--accent-ink); background:var(--accent); border-color:var(--accent)}
+button:disabled{opacity:.35; cursor:not-allowed}
+/* A toggle that is on, as opposed to an action that is running. */
+button.ghost.on{color:var(--accent); background:transparent; border-color:var(--accent)}
+
+.sev-high{color:var(--high)}
+.sev-medium{color:var(--medium)}
+.sev-low{color:var(--good)}
+.sev-none{color:var(--neutral)}
+
+/* Corner ticks: the four small brackets that frame a panel. */
+.ticks{position:relative}
+.ticks::before,.ticks::after{
+  content:""; position:absolute; width:8px; height:8px; pointer-events:none;
+  border-color:var(--line2); border-style:solid;
+}
+.ticks::before{left:-1px; top:-1px; border-width:1px 0 0 1px}
+.ticks::after{right:-1px; bottom:-1px; border-width:0 1px 1px 0}

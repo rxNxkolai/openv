@@ -19,13 +19,13 @@ decision they would otherwise not have made.
 | M2 | Pose and reach detection | done, validated both directions |
 | M3 | Analysis and agent | done, agent path unrun |
 | M4 | Live camera, browser console | done in software, **unrun on a real camera** |
-| M5 | Spatial layer, floor coordinates | done bar multi-camera |
+| M5 | Spatial layer, camera fusion, 3D map | built, **fusion unrun on real cameras** |
 | M6 | Agent and chat surface | tools and loop built, unrun |
 | M7 | Connectors and automation | re-measurement, digest and webhook done |
 | M8 | Store map, product and brand numbers, export | built, **unrun on a real planogram** |
 | M9 | Multi-store | rollup across exports built, shared database not started |
 
-Four gates are open and none of them are code:
+Five gates are open and none of them are code:
 
 1. **M4 has never run on a real fixed camera.** Everything else is downstream of
    believing this works in a store.
@@ -37,7 +37,11 @@ Four gates are open and none of them are code:
    occlusion-proof denominators were tried; both give believable numbers and no
    discrimination. See CLAUDE.md. This needs footage of a reach with the whole
    body in frame, and a test fails if such footage ever arrives.
-4. **The store map has never held a retailer's real planogram.** M8 is verified
+4. **Fusion has never joined two real cameras.** It is scored against ground
+   truth on a synthetic store, where calibrations agree and clocks are exact.
+   Real cameras disagree about where the floor is by some amount nobody has
+   measured, and that amount decides the merge radius.
+5. **The store map has never held a retailer's real planogram.** M8 is verified
    on a synthetic store and on hand-built cases. What a real planogram export
    looks like, how often it disagrees with the shelf, and how fine the zones
    have to be drawn before a brand gets a number are all still unknown.
@@ -121,21 +125,37 @@ space.
 - `openv live --floor` puts the plan view in the browser and records to the
   same store the offline path uses.
 
+- `fusion.py` and `openv fuse` join cameras recorded together into store-wide
+  paths, on floor position and time only.
+- A fused session reads as the whole store: each zone's funnel from the camera
+  that measured it, ranked against a store-wide median, with a shopper two
+  cameras both saw counted once.
+- `openv map3d` draws the store in three dimensions, as a replay in one HTML
+  file or live over every camera writing to the store.
+
+**The decision that gated multi-camera, as taken:** stitching one shopper
+across cameras is a form of re-identification, which collides with the
+session-scoped track ID rule. Spatial-temporal handoff on the floor plane needs
+no appearance model and keeps the privacy posture intact. Appearance-based
+re-ID does not, and it is the exact surface BIPA litigation targets. Fusion is
+the first kind and has no input that could carry the second.
+
+**What that costs, measured on the synthetic store:** no fused track held two
+shoppers, 85% of shoppers came out as one track across three cameras, and the
+count ran 16% high from refusing to guess. An appearance model would close
+most of that 16%. It is not worth the posture.
+
+**Exit criteria:** two real cameras with overlapping coverage produce one
+continuous path across the seam, with no appearance model involved. Met on
+synthetic cameras. Not yet run on real ones.
+
 **Remaining:**
 
-- **Multi-camera fusion.** Each camera gets its own homography into one shared
-  floor space.
-
-**The decision that gates multi-camera:** stitching one shopper across cameras is
-a form of re-identification, which collides with the session-scoped track ID
-rule. Spatial-temporal handoff on the floor plane, where a track leaving one
-camera's frustum is matched to one entering another's at the same floor point,
-needs no appearance model and keeps the privacy posture intact. Appearance-based
-re-ID does not, and it is the exact surface BIPA litigation targets. This is a
-product decision, not an implementation detail.
-
-**Exit criteria:** two cameras with overlapping coverage produce one continuous
-path across the seam, with no appearance model involved.
+- Two real cameras, to measure how far apart they place one shopper.
+- A live console that runs several cameras in one process. Today each camera
+  is its own process against a shared store, and `map3d --live` is where they
+  meet.
+- Clock sync between cameras that is better than each machine's own clock.
 
 ---
 
@@ -396,9 +416,9 @@ first thing a brand buyer will see, and the fix is zone granularity.
 **Then the M6 page**, built around findings, products and approvals and not
 around charts.
 
-M5 multi-camera waits on the re-identification decision. M9's database waits on
-more than a handful of stores.
+M5 fusion waits on two real cameras. M9's database waits on more than a
+handful of stores.
 
-The four open gates at the top of this document outrank all of it. A live
+The five open gates at the top of this document outrank all of it. A live
 camera in a real store, with that store's own planogram, tells you more than
 any of these phases.

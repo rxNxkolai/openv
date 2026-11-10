@@ -549,6 +549,58 @@ class LiveEngine:
                 ],
             }
 
+    def scene_payload(self) -> dict[str, Any]:
+        """What the 3D map needs besides positions: the store and this camera.
+
+        Fixtures come from the store map when one was given, without findings:
+        the console's findings panel already carries those, live, and a colour
+        frozen at page load would go stale beside it.
+        """
+        with self._lock:
+            floor_map, store_map = self._floor_map, self._store_map
+            extent = self._floor_extent
+        if floor_map is None:
+            return {"enabled": False}
+
+        from openv.mapview import camera_footprint
+
+        fixtures = []
+        outline = None
+        site = {"id": "unmapped", "name": None}
+        if store_map is not None:
+            site = {"id": store_map.site, "name": store_map.name}
+            outline = [list(p) for p in store_map.outline] if store_map.outline else None
+            fixtures = [
+                {
+                    "zone": f.zone, "label": f.label, "brands": list(f.brands),
+                    "plan": [list(p) for p in f.plan] if f.plan is not None else None,
+                    "measured": True, "severity": "none",
+                    "rate": "", "counts": "", "readout": "",
+                }
+                for f in store_map.fixtures
+            ]
+        if outline:
+            xs = [p[0] for p in outline]
+            ys = [p[1] for p in outline]
+            extent = (min(xs), min(ys), max(xs), max(ys))
+        return {
+            "enabled": True,
+            "site": site,
+            "units": floor_map.units,
+            "outline": outline,
+            "extent": list(extent),
+            "fixtures": fixtures,
+            "cameras": [
+                {
+                    "label": "this camera",
+                    "footprint": camera_footprint(
+                        floor_map.as_dict(), self.width, self.height
+                    ),
+                }
+            ],
+            "tracks": [],
+        }
+
     def _record(self, visits: list[ZoneSpan], reaches: list[ZoneSpan]) -> None:
         with self._lock:
             for span, bucket, label in (

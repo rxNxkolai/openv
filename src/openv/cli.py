@@ -1584,6 +1584,7 @@ def _cmd_demo_store(args: argparse.Namespace) -> int:
     first, second = paths["store-014"], paths["store-022"]
     print(f"written  {first}")
     print(f"         {second}")
+    print(f"         {paths['cameras']}")
     print(f"         {paths['zones']}")
     print(f"         {paths['map']}")
     print("\nThese numbers are invented. They show what the commands say about a")
@@ -1593,6 +1594,122 @@ def _cmd_demo_store(args: argparse.Namespace) -> int:
     print(f"  uv run openv measure shelf-endcap --db {first}")
     print(f"  uv run openv export --db {first}")
     print(f"  uv run openv planview --db {first} --out {Path(args.out) / 'plan.svg'}")
+    cameras = paths["cameras"]
+    print("\nthree cameras over one store, fused into one 3D map:")
+    print(f"  uv run openv fuse --db {cameras}")
+    print(f"  uv run openv map3d --db {cameras} --out {Path(args.out) / 'map.html'}")
+    return 0
+
+
+def _cmd_fuse(args: argparse.Namespace) -> int:
+    """Join cameras recorded at the same time into store-wide paths."""
+    from openv.fusion import FusionRefused, fuse_sessions, simultaneous_sessions
+    from openv.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    with EventStore(args.db) as store:
+        sessions = args.sessions or simultaneous_sessions(store)
+        if len(sessions) < 2:
+            print(
+                "error: fusion needs at least two camera sessions recorded at the "
+                "same time, each with --floor. `openv sessions` lists what there is",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            fused, report = fuse_sessions(
+                store, sessions, same_start=args.same_start,
+                merge_radius=args.merge_radius, handoff_gap_s=args.handoff_seconds,
+            )
+        except FusionRefused as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    print(
+        f"fused sessions {', '.join(str(s) for s in sorted(set(sessions)))} "
+        f"into session {fused}\n"
+    )
+    print(f"camera tracks in        {report.camera_tracks:>5}")
+    print(f"fused shoppers out      {report.fused_tracks:>5}   (an upper bound)")
+    print(f"  joined in an overlap  {report.merged_in_overlap:>5}")
+    print(f"  handed across a gap   {report.handed_off:>5}")
+    print(f"  rejoined after a drop {report.rejoined:>5}")
+    print(f"  not guessed           {report.ambiguous:>5}")
+    print("\nJoined on floor position and time only. No appearance is used.")
+    if report.ambiguous:
+        print(
+            f"{report.ambiguous} time{'' if report.ambiguous == 1 else 's'} a camera "
+            "track could have been one of two shoppers. It was kept"
+        )
+        print("as a new track and not merged, which is why the count is an upper bound.")
+    print(f"\nnext:\n  uv run openv map3d --db {args.db} --out out/map.html")
+    return 0
+
+
+def _cmd_map3d(args: argparse.Namespace) -> int:
+    """The 3D store map: a replay written to one HTML file, or a live server."""
+    from openv.store import EventStore
+
+    if not Path(args.db).exists():
+        print(f"error: no database at {args.db}", file=sys.stderr)
+        return 1
+
+    if args.live:
+        import threading
+        import webbrowser
+
+        import uvicorn
+
+        from openv.mapview import LiveMap, create_map_app
+
+        url = f"http://127.0.0.1:{args.port}"
+        print(f"db       {args.db}")
+        print("cameras  every session writing floor positions to that store")
+        print("         run each as its own `openv live --floor ... --db` process")
+        print(f"\nopen     {url}\n")
+        if not args.no_browser:
+            threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        uvicorn.run(
+            create_map_app(LiveMap(args.db)), host="127.0.0.1", port=args.port,
+            log_level="warning",
+        )
+        return 0
+
+    from openv.mapview import build_scene, render_html
+
+    with EventStore(args.db) as store:
+        session_id = args.session
+        if session_id is None:
+            # A fused session is the whole store, so it is what a person
+            # asking for "the map" means when there is one.
+            session_id = store.latest_fused_session()
+        if session_id is None:
+            with_positions = [s["id"] for s in store.sessions() if s["positions"]]
+            session_id = with_positions[0] if with_positions else None
+        if session_id is None:
+            print(
+                "error: no session has floor positions. Record with --floor, "
+                "then `openv fuse` if there is more than one camera",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            scene = build_scene(store, session_id)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(render_html(scene), encoding="utf-8")
+    print(f"written  {out_path}  ({scene['caption']})")
+    print(f"         {scene['shoppers']} tracks, {len(scene['cameras'])} camera views, "
+          f"{len(scene['fixtures'])} fixtures")
+    print("         one file, nothing fetched. Open it in a browser.")
+    print("         It shows positions, so it is for the store and is not an export.")
     return 0
 
 
@@ -2289,6 +2406,48 @@ def main(argv: list[str] | None = None) -> int:
     planview.add_argument("--session", type=int, help="session to draw (default: latest)")
     planview.add_argument("--out", default="out/plan.svg", help="where to write the SVG")
     planview.set_defaults(func=_cmd_planview)
+
+    fuse_p = sub.add_parser(
+        "fuse", help="join cameras recorded at the same time into store-wide paths"
+    )
+    fuse_p.add_argument("--db", default="out/openv.db", help="event store to read")
+    fuse_p.add_argument(
+        "--sessions", type=int, nargs="+",
+        help="camera sessions to fuse (default: the newest and those recorded with it)",
+    )
+    fuse_p.add_argument(
+        "--same-start", action="store_true",
+        help="the recordings began together. For footage processed after the "
+        "fact, whose session times are when it was processed",
+    )
+    fuse_p.add_argument(
+        "--merge-radius", type=float, default=0.8,
+        help="how far apart two cameras may place one shopper, in floor units "
+        "(default: 0.8)",
+    )
+    fuse_p.add_argument(
+        "--handoff-seconds", type=float, default=4.0,
+        help="how long a shopper can be out of every view and still be the "
+        "same track (default: 4)",
+    )
+    fuse_p.set_defaults(func=_cmd_fuse)
+
+    map3d = sub.add_parser(
+        "map3d", help="the 3D store map: fixtures, camera views and shoppers"
+    )
+    map3d.add_argument("--db", default="out/openv.db", help="event store to read")
+    map3d.add_argument(
+        "--session", type=int,
+        help="session to replay (default: the newest fused session, else the newest)",
+    )
+    map3d.add_argument("--out", default="out/map.html", help="where to write the replay")
+    map3d.add_argument(
+        "--live", action="store_true",
+        help="serve a live map, fusing every camera writing to the store",
+    )
+    map3d.add_argument("--port", type=int, default=8010)
+    map3d.add_argument("--no-browser", action="store_true", help="do not auto-open")
+    map3d.set_defaults(func=_cmd_map3d)
 
     demo = sub.add_parser(
         "demo-store",

@@ -18,6 +18,53 @@ from openv.web.engine import LiveEngine
 
 STATIC = Path(__file__).parent / "static"
 
+_STATIC_TYPES = {
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+}
+
+
+def mount_static(app: FastAPI) -> None:
+    """Serve the theme, the map renderer and, when present, a local brand layer.
+
+    `brand.css` and `fonts/` are not part of the open-source release. When a
+    deployment drops them in beside `theme.css` they are served and loaded
+    after it, so a brand can restyle every page by overriding tokens and
+    nothing here has to know what it looks like.
+    """
+    from fastapi.responses import Response
+
+    def serve(path: Path) -> Response:
+        # Resolved and checked against the static directory, so a name with
+        # dots in it cannot walk out to the rest of the disk.
+        resolved = path.resolve()
+        kind = _STATIC_TYPES.get(resolved.suffix)
+        inside = STATIC.resolve() in resolved.parents
+        if kind is None or not inside or not resolved.is_file():
+            return Response(status_code=404)
+        return Response(resolved.read_bytes(), media_type=kind)
+
+    @app.get("/static/{name}")
+    def static_file(name: str) -> Response:
+        return serve(STATIC / name)
+
+    @app.get("/static/fonts/{name}")
+    def static_font(name: str) -> Response:
+        return serve(STATIC / "fonts" / name)
+
+
+def console_page() -> str:
+    """The live console, with the shared theme linked ahead of its own rules."""
+    page = (STATIC / "index.html").read_text(encoding="utf-8")
+    links = '<link rel="stylesheet" href="/static/theme.css">'
+    if (STATIC / "brand.css").exists():
+        links += '\n<link rel="stylesheet" href="/static/brand.css">'
+    return page.replace("<!--THEME-->", links)
+
 
 def create_app(engine: LiveEngine) -> FastAPI:
     app = FastAPI(title="OpenV live", docs_url=None, redoc_url=None)
@@ -32,7 +79,7 @@ def create_app(engine: LiveEngine) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return (STATIC / "index.html").read_text(encoding="utf-8")
+        return console_page()
 
     @app.get("/stream")
     def stream() -> StreamingResponse:
@@ -73,6 +120,12 @@ def create_app(engine: LiveEngine) -> FastAPI:
         # is empty on any camera without a calibration.
         return JSONResponse(engine.floor_payload())
 
+    @app.get("/api/scene")
+    def get_scene() -> JSONResponse:
+        # The store this camera is in, for the 3D map: fixtures from the store
+        # map and this camera's patch of floor. Static for the life of a run.
+        return JSONResponse(engine.scene_payload())
+
     @app.post("/api/zones")
     def post_zones(payload: dict[str, Any]) -> JSONResponse:
         zones = payload.get("zones", [])
@@ -82,4 +135,5 @@ def create_app(engine: LiveEngine) -> FastAPI:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, "count": len(zones)})
 
+    mount_static(app)
     return app

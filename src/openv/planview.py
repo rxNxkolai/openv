@@ -20,13 +20,22 @@ from xml.sax.saxutils import escape
 
 from openv.products import ProductAnalysis, Shelf
 
+# The same tokens as web/static/theme.css, written out because an SVG that is
+# handed to somebody has no stylesheet to read them from.
+_BG = "#07090b"
+_PANEL = "#0c0f13"
+_LINE = "#2a323d"
+_FG = "#dfe5ec"
+_DIM = "#8492a3"
+_ACCENT = "#6fd6ff"
 _FILL = {
-    "high": "#d64545",
-    "medium": "#e0a030",
-    "low": "#3d9a5f",
-    "none": "#8a8f98",
+    "high": "#ff5a5f",
+    "medium": "#ffb224",
+    "low": "#3ddc97",
+    "none": "#6b7785",
 }
-_UNWATCHED = "#c9ccd1"
+_UNWATCHED = "#39424d"
+_FONT = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 _WIDTH = 960.0
 _MARGIN = 28.0
 _GRID = 48  # traffic cells across the longer side
@@ -87,14 +96,14 @@ def render_plan(
     total_height = height + 64
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {_WIDTH:.0f} '
-        f'{total_height:.0f}" font-family="system-ui, sans-serif" font-size="12">',
-        f'<rect width="{_WIDTH:.0f}" height="{total_height:.0f}" fill="#fbfbfa"/>',
+        f'{total_height:.0f}" font-family="{_FONT}" font-size="11">',
+        f'<rect width="{_WIDTH:.0f}" height="{total_height:.0f}" fill="{_BG}"/>',
     ]
 
     if store_map.outline is not None:
         out.append(
-            f'<polygon points="{path(store_map.outline)}" fill="#ffffff" '
-            'stroke="#2b2f36" stroke-width="2"/>'
+            f'<polygon points="{path(store_map.outline)}" fill="{_PANEL}" '
+            f'stroke="{_FG}" stroke-opacity="0.6" stroke-width="1.25"/>'
         )
 
     # Traffic: position samples per floor cell. Positions are sampled at a
@@ -111,8 +120,8 @@ def render_plan(
             left, top = px((min_x + cx * cell, min_y + (cy + 1) * cell))
             out.append(
                 f'<rect x="{left:.1f}" y="{top:.1f}" width="{cell * scale:.1f}" '
-                f'height="{cell * scale:.1f}" fill="#2f6fde" '
-                f'fill-opacity="{0.08 + 0.62 * count / peak:.2f}"/>'
+                f'height="{cell * scale:.1f}" fill="{_ACCENT}" '
+                f'fill-opacity="{0.05 + 0.5 * count / peak:.2f}"/>'
             )
 
     for fixture in drawn:
@@ -120,8 +129,8 @@ def render_plan(
         fill = _FILL[shelf.finding.severity] if shelf is not None else _UNWATCHED
         dash = "" if shelf is not None else ' stroke-dasharray="5 4"'
         out.append(
-            f'<polygon points="{path(fixture.plan)}" fill="{fill}" fill-opacity="0.85" '
-            f'stroke="#2b2f36" stroke-width="1"{dash}>'
+            f'<polygon points="{path(fixture.plan)}" fill="{fill}" fill-opacity="0.3" '
+            f'stroke="{fill}" stroke-width="1.25"{dash}>'
             f"<title>{escape(fixture.label or fixture.zone)}: {escape(_label(shelf))}. "
             f"{escape(', '.join(fixture.brands) or 'nothing mapped')}</title></polygon>"
         )
@@ -131,11 +140,12 @@ def render_plan(
         turn = f' transform="rotate(-90 {cx:.1f} {cy:.1f})"' if fy1 - fy0 > 1.6 * (fx1 - fx0) else ""
         out.append(
             f'<text x="{cx:.1f}" y="{cy - 3:.1f}" text-anchor="middle" '
-            f'font-weight="600" fill="#14161a"{turn}>{escape(fixture.label or fixture.zone)}</text>'
+            f'letter-spacing="0.8" fill="{_FG}"{turn}>'
+            f"{escape((fixture.label or fixture.zone).upper())}</text>"
         )
         out.append(
             f'<text x="{cx:.1f}" y="{cy + 12:.1f}" text-anchor="middle" '
-            f'fill="#14161a"{turn}>{escape(_label(shelf))}</text>'
+            f'fill="{fill if shelf is not None else _DIM}"{turn}>{escape(_label(shelf))}</text>'
         )
 
     x = _MARGIN
@@ -147,15 +157,15 @@ def render_plan(
         ("not measured", _UNWATCHED),
     ):
         out.append(f'<rect x="{x:.0f}" y="{legend_y:.0f}" width="12" height="12" fill="{colour}"/>')
-        out.append(f'<text x="{x + 17:.0f}" y="{legend_y + 10:.0f}" fill="#2b2f36">{text}</text>')
-        x += 30 + 6.6 * len(text)
+        out.append(f'<text x="{x + 17:.0f}" y="{legend_y + 10:.0f}" fill="{_DIM}">{text}</text>')
+        x += 32 + 6.8 * len(text)
     if samples:
-        out.append(f'<rect x="{x:.0f}" y="{legend_y:.0f}" width="12" height="12" fill="#2f6fde" fill-opacity="0.6"/>')
-        out.append(f'<text x="{x + 17:.0f}" y="{legend_y + 10:.0f}" fill="#2b2f36">foot traffic</text>')
+        out.append(f'<rect x="{x:.0f}" y="{legend_y:.0f}" width="12" height="12" fill="{_ACCENT}" fill-opacity="0.55"/>')
+        out.append(f'<text x="{x + 17:.0f}" y="{legend_y + 10:.0f}" fill="{_DIM}">foot traffic</text>')
 
     site = store_map.name or store_map.site
     out.append(
-        f'<text x="{_MARGIN:.0f}" y="{legend_y + 34:.0f}" fill="#5b616b">'
+        f'<text x="{_MARGIN:.0f}" y="{legend_y + 34:.0f}" fill="{_DIM}">'
         f"{escape(site)}, session {products.session_id}, "
         f"{products.analysis.total_shoppers} shoppers observed. Plan in "
         f"{escape(store_map.units)}.</text>"

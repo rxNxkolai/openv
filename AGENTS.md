@@ -105,6 +105,53 @@ one frustum where another enters) needs no appearance model and keeps the postur
 intact. Appearance-based re-ID does not. That is a product decision, not an
 implementation detail.
 
+`fusion.py` is the spatial-temporal version, built. Its input is `Observation`:
+camera, track id, time, x, y. A test holds it to those five fields and to
+importing nothing that touches pixels. **Do not add a sixth field.** Anything
+describing how a shopper looks would have to enter there, and that is the
+appearance model the paragraph above rules out.
+
+Four rules in it are load-bearing, and each was found by scoring against
+ground truth on the synthetic three-camera store (`demo.simulate_cameras`,
+which knows which shopper each camera track really was):
+
+- **When two shoppers could both be the match, neither is.** A new track
+  starts and `ambiguous` is counted. Splitting inflates the count. Guessing
+  swaps two shoppers' paths half the time.
+- **A new camera track is held one sample before it is placed**, then compared
+  with where each fused track actually was. Deciding on arrival means
+  predicting a second ahead, and at an aisle end that is over a metre wrong.
+- **A pickup across a gap must agree on direction of travel.** Without it, a
+  shopper walking in through the door is merged with the one who just walked
+  out. That one rule took blended tracks from about 8% to none.
+- **Position smoothing stays light (0.85).** At 0.6 the straight-line lag at
+  corners alone was splitting one shopper in five.
+
+**A fused count that matches the truth proves nothing.** Before the direction
+rule the count was within 5% of the real number and 8% of tracks held two
+people: splits and wrong merges cancelling. Score fusion on blended tracks and
+whole tracks, never on the count. `tests/test_fusion.py` does.
+
+The numbers to quote, synthetic only: ten runs, 1,100 shoppers, no blended
+track, 85% whole, count 16% high. Clean calibrations and exact clocks. It has
+not run on two real cameras, and calibration disagreement and clock drift are
+what will decide `merge_radius` there.
+
+`fuse_sessions` refuses sessions that do not overlap in time. That refusal is
+the difference between fusion and cross-day re-identification, so it is not a
+convenience check. `--same-start` exists for footage processed after the fact
+and is the operator's statement, not a bypass.
+
+A fused session reads as the whole store. `analyze` gathers each zone's funnel
+from the camera that measured it and re-ranks against a store-wide median.
+`fusion_links` records which camera track became which fused track, which is
+what lets a brand under two cameras count a shopper once.
+
+`mapview.py` and the 3D map show positions, so they are **operator views, not
+exports**. They are deliberately absent from the outbound-module list in
+`tests/test_privacy_posture.py`. Markers are renumbered per scene and no stored
+track id reaches the page. Nothing for a third party is built from them.
+
 ## Milestones
 
 - **M0** video in, people detected, stable track IDs out  (done)
@@ -113,7 +160,8 @@ implementation detail.
 - **M3** analysis + agent, diagnosis and recommendation  (done, agent path unrun)
 - **M4** live camera end to end  (done for the software path; unrun on a real
   fixed camera, which is the outstanding gate)
-- **M5** floor coordinates and plan view  (done bar multi-camera)
+- **M5** floor coordinates, camera fusion, 3D store map  (built; fusion verified
+  on synthetic cameras only, unrun on two real ones)
 - **M6** agent tools and chat  (built, tested against a scripted client, unrun live)
 - **M7** re-measurement, digest, webhook  (done)
 - **M8** store map, product and brand numbers, export  (done on synthetic data;
@@ -276,6 +324,22 @@ drawn shelf watched with pose on and never reached is a `dead` finding, `measure
 returns `not_comparable` when the polygon changed, and the live console opens a
 fresh session when its zones change so one session id never mixes two boundaries.
 A session that predates this reports its zones as unrecorded, not as empty.
+
+## Theme
+
+One set of tokens, `src/openv/web/static/theme.css`, for the live console, the
+3D map and the plan drawing: near black, hairline rules, uppercase micro-labels,
+monospace for measurements, one accent for what is live, and red, amber and
+green for severity only. `planview.py` repeats the values, since an SVG that is
+handed on has no stylesheet.
+
+No font files and no CDN. The console has to load on an edge box with no
+network, and `static/brand.css` and `static/fonts/` are gitignored as the
+private brand layer: the server loads them after the theme when they exist. New
+pages take colours from the tokens and add none of their own.
+
+The 3D map is a plain canvas with its own projection, not a 3D library. Keep it
+that way unless the scene outgrows a few hundred polygons.
 
 ## House style
 

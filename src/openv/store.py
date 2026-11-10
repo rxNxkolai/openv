@@ -168,6 +168,34 @@ CREATE TABLE IF NOT EXISTS placements (
 
 CREATE INDEX IF NOT EXISTS idx_placements_brand ON placements(brand, session_id);
 
+-- A fused session is several cameras' floor positions joined into store-wide
+-- paths, and this is which camera sessions it was built from and how their
+-- clocks were lined up. Without it a fused path is a claim nobody can audit:
+-- the cameras behind it, and the time offset that decided which dots were
+-- "at the same moment", would be gone.
+--
+-- Members are always sessions recorded at the same time. Joining across
+-- days would be re-identification, and the code that writes this refuses to.
+CREATE TABLE IF NOT EXISTS fusions (
+    id              INTEGER PRIMARY KEY,
+    session_id      INTEGER NOT NULL REFERENCES sessions(id),
+    member_session  INTEGER NOT NULL REFERENCES sessions(id),
+    offset_s        REAL    NOT NULL,
+    UNIQUE (session_id, member_session)
+);
+
+-- Which camera track became which fused track. The audit trail behind a
+-- fused path, and what lets a shopper two cameras both saw be counted once.
+-- Both ids are scoped to their sessions and neither says who anybody is.
+CREATE TABLE IF NOT EXISTS fusion_links (
+    id              INTEGER PRIMARY KEY,
+    session_id      INTEGER NOT NULL REFERENCES sessions(id),
+    member_session  INTEGER NOT NULL REFERENCES sessions(id),
+    track_id        INTEGER NOT NULL,
+    fused_id        INTEGER NOT NULL,
+    UNIQUE (session_id, member_session, track_id)
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id          INTEGER PRIMARY KEY,
     session_id  INTEGER REFERENCES sessions(id),
@@ -245,6 +273,7 @@ class EventStore:
         zones: ZoneSet | None = None,
         pose: bool | None = None,
         store_map: StoreMap | None = None,
+        started_at: datetime | None = None,
     ) -> int:
         """Open a session and record what it was measured against.
 
@@ -259,7 +288,12 @@ class EventStore:
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 source,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                # Milliseconds, because this is the clock several cameras are
+                # lined up on. At walking pace a second of error between two
+                # cameras is over a metre on the floor.
+                (started_at or datetime.now(timezone.utc)).isoformat(
+                    timespec="milliseconds"
+                ),
                 float(fps),
                 int(width),
                 int(height),
@@ -425,6 +459,23 @@ class EventStore:
         if not names:
             return 0
         marks = ", ".join("?" for _ in names)
+        members = [m for m, _ in self.fusion_members(session_id)]
+        if members:
+            # A fused session: the rows live with the cameras that measured
+            # them, and a shopper two cameras both saw is one fused track. A
+            # camera track that was never placed on the floor has no fused id
+            # and stands for itself, under a key no fused id can collide with.
+            member_marks = ", ".join("?" for _ in members)
+            row = self._conn.execute(
+                f"SELECT COUNT(DISTINCT COALESCE(l.fused_id,"  # noqa: S608
+                f" -(v.session_id * 10000000 + v.track_id))) AS n FROM {table} v"
+                " LEFT JOIN fusion_links l ON l.session_id = ?"
+                " AND l.member_session = v.session_id AND l.track_id = v.track_id"
+                f" WHERE v.session_id IN ({member_marks}) AND v.dwell_s >= ?"
+                f" AND v.zone IN ({marks})",
+                (session_id, *members, min_dwell_s, *names),
+            ).fetchone()
+            return int(row["n"]) if row else 0
         # `table` is one of two literals, and `marks` is only question marks.
         row = self._conn.execute(
             f"SELECT COUNT(DISTINCT track_id) AS n FROM {table}"  # noqa: S608
@@ -526,6 +577,99 @@ class EventStore:
         )
         self._conn.commit()
         return len(rows)
+
+    def position_rows(self, session_id: int) -> list[tuple[int, float, float, float]]:
+        """One session's positions as (track_id, t_s, x, y), in time order."""
+        return [
+            (int(r["track_id"]), float(r["t_s"]), float(r["x"]), float(r["y"]))
+            for r in self._conn.execute(
+                "SELECT track_id, t_s, x, y FROM positions"
+                " WHERE session_id = ? ORDER BY t_s, id",
+                (session_id,),
+            )
+        ]
+
+    def position_span(self, session_id: int) -> tuple[float, float] | None:
+        """First and last position time in a session, or None when it has none."""
+        row = self._conn.execute(
+            "SELECT MIN(t_s) AS first, MAX(t_s) AS last FROM positions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None or row["first"] is None:
+            return None
+        return float(row["first"]), float(row["last"])
+
+    def fusion_of(self, members: Iterable[int]) -> int | None:
+        """The fused session already built from exactly these members, if any."""
+        wanted = sorted(set(members))
+        for row in self._conn.execute("SELECT DISTINCT session_id FROM fusions"):
+            if [m for m, _ in self.fusion_members(int(row["session_id"]))] == wanted:
+                return int(row["session_id"])
+        return None
+
+    def latest_fused_session(self) -> int | None:
+        row = self._conn.execute("SELECT MAX(session_id) AS id FROM fusions").fetchone()
+        return int(row["id"]) if row and row["id"] is not None else None
+
+    def positions_since(self, after_id: int) -> list[sqlite3.Row]:
+        """Positions written after a row id, across every session.
+
+        What a live map tails: it remembers the last row it saw and asks for
+        what has arrived since, from however many cameras are writing.
+        """
+        return list(
+            self._conn.execute(
+                "SELECT id, session_id, track_id, t_s, x, y FROM positions"
+                " WHERE id > ? ORDER BY id",
+                (after_id,),
+            )
+        )
+
+    def max_position_id(self) -> int:
+        row = self._conn.execute("SELECT MAX(id) AS id FROM positions").fetchone()
+        return int(row["id"]) if row and row["id"] is not None else 0
+
+    def add_fusion_members(
+        self, session_id: int, members: Iterable[tuple[int, float]]
+    ) -> None:
+        self._conn.executemany(
+            "INSERT INTO fusions (session_id, member_session, offset_s) VALUES (?, ?, ?)",
+            [(session_id, member, offset) for member, offset in members],
+        )
+        self._conn.commit()
+
+    def add_fusion_links(
+        self, session_id: int, links: Iterable[tuple[int, int, int]]
+    ) -> None:
+        """Record (member session, camera track id, fused id) for a fused session."""
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO fusion_links"
+            " (session_id, member_session, track_id, fused_id) VALUES (?, ?, ?, ?)",
+            [(session_id, member, track, fused) for member, track, fused in links],
+        )
+        self._conn.commit()
+
+    def fused_shoppers(self, session_id: int) -> int:
+        """Distinct fused tracks in a fused session: the store-wide shopper count."""
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT track_id) AS n FROM positions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def fusion_members(self, session_id: int) -> list[tuple[int, float]]:
+        """The camera sessions a fused session was built from, with offsets.
+
+        Empty for an ordinary camera session.
+        """
+        return [
+            (int(r["member_session"]), float(r["offset_s"]))
+            for r in self._conn.execute(
+                "SELECT member_session, offset_s FROM fusions"
+                " WHERE session_id = ? ORDER BY member_session",
+                (session_id,),
+            )
+        ]
 
     def paths(
         self, session_id: int | None = None, min_points: int = 2

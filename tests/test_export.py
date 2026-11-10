@@ -272,7 +272,7 @@ def test_the_plan_draws_every_fixture_with_what_happened_at_it(tmp_path):
         svg = render_plan(analyze_products(store, session), store.paths(session))
 
     assert svg.startswith("<svg") and svg.rstrip().endswith("</svg>")
-    assert "Bay A" in svg and "Bay C" in svg
+    assert "BAY A" in svg and "BAY C" in svg
     assert "12 of 60 reached (20%)" in svg
     assert "0 of 40 reached (0%)" in svg
     # Text from the map is escaped, not trusted.
@@ -291,7 +291,7 @@ def test_recorded_positions_become_a_traffic_layer_with_no_track_in_it(tmp_path)
         svg = render_plan(analyze_products(store, session), store.paths(session))
 
     assert "foot traffic" in svg
-    assert svg.count('fill="#2f6fde"') >= 5
+    assert svg.count('fill="#6fd6ff"') >= 5
     assert "track" not in svg
 
 

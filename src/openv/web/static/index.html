@@ -4,19 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>openv · live</title>
+<!--THEME-->
 <style>
-  :root{
-    --bg:#0b0d10; --panel:#12151a; --line:#232833; --line2:#2f3644;
-    --fg:#e6e9ef; --dim:#7d8797; --dimmer:#59616f;
-    --accent:#ffb020; --cyan:#3fd8e0; --good:#4ade80;
-  }
-  *{box-sizing:border-box}
-  html,body{height:100%}
-  body{
-    margin:0; background:var(--bg); color:var(--fg);
-    font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    -webkit-font-smoothing:antialiased;
-  }
   .app{display:grid; grid-template-columns:minmax(0,1fr) 340px; height:100vh}
   @media (max-width:900px){ .app{grid-template-columns:1fr; height:auto} }
 
@@ -26,23 +15,13 @@
     display:flex; align-items:center; gap:14px; padding:0 12px; height:34px;
     background:var(--panel); border-bottom:1px solid var(--line); flex:none;
   }
-  .brand{color:var(--accent); letter-spacing:.14em; text-transform:uppercase; font-size:10px}
   .bar .sp{flex:1}
   .pill{
     display:inline-flex; align-items:center; gap:6px; color:var(--dim);
     font-size:10px; letter-spacing:.08em; text-transform:uppercase;
   }
-  .dot{width:6px;height:6px;border-radius:50%;background:var(--dimmer)}
+  .dot{width:6px;height:6px;background:var(--dimmer)}
   .dot.on{background:var(--good); box-shadow:0 0 8px var(--good)}
-  button{
-    font:inherit; font-size:10px; letter-spacing:.08em; text-transform:uppercase;
-    background:transparent; color:var(--dim); border:1px solid var(--line2);
-    padding:4px 9px; cursor:pointer; border-radius:2px;
-  }
-  button:hover{color:var(--fg); border-color:var(--dim)}
-  button.on{color:#0b0d10; background:var(--accent); border-color:var(--accent)}
-  button:disabled{opacity:.35; cursor:not-allowed}
-
   /* The feed sizes itself against .view, which has a definite height from
      flex:1 inside a 100vh column. An intermediate auto-height wrapper would make
      the image's max-height:100% cyclic and collapse it to a pixel. */
@@ -53,8 +32,8 @@
   .drawing #draw{display:block}
   .hint{
     position:absolute; left:50%; top:12px; transform:translateX(-50%);
-    background:rgba(11,13,16,.9); border:1px solid var(--line2); color:var(--dim);
-    padding:5px 10px; font-size:10px; letter-spacing:.06em; border-radius:2px; display:none;
+    background:rgba(7,9,11,.9); border:1px solid var(--line2); color:var(--dim);
+    padding:5px 10px; font-size:10px; letter-spacing:.06em; display:none;
   }
   .drawing .hint{display:block}
 
@@ -85,9 +64,9 @@
   .feed{max-height:230px; overflow-y:auto}
   .ev{display:flex; gap:8px; padding:4px 12px; border-top:1px solid var(--line); color:var(--dim)}
   .ev b{color:var(--fg); font-weight:400}
-  .ev .d{margin-left:auto; color:var(--accent)}
+  .ev .d{margin-left:auto; color:var(--fg)}
   .empty{padding:10px 12px; color:var(--dimmer); font-size:11px}
-  .err{padding:8px 12px; color:#ff6b6b; font-size:11px; border-top:1px solid var(--line)}
+  .err{padding:8px 12px; color:var(--high); font-size:11px; border-top:1px solid var(--line)}
 
   .find{padding:7px 12px; border-top:1px solid var(--line); display:flex; gap:8px}
   .find .sev{
@@ -96,11 +75,14 @@
   }
   .find .body{min-width:0}
   .find .txt{color:var(--fg)}
+  .find .txt,.find .fun{display:block}
   .find .fun{color:var(--dimmer); margin-top:2px}
-  .sev-high{color:#ff6b6b}
-  .sev-medium{color:var(--accent)}
-  .sev-low{color:var(--dimmer)}
-  .sev-none{color:var(--dimmer)}
+  /* The 3D map shares the stage with the camera feed and replaces it when on. */
+  #map3d{position:absolute; inset:0; width:100%; height:100%; display:none;
+         cursor:grab; touch-action:none;
+         background:radial-gradient(ellipse at 50% 38%, #0d1218 0%, var(--bg) 70%)}
+  .mapping #map3d{display:block}
+  .mapping #feed{visibility:hidden}
 </style>
 </head>
 <body>
@@ -111,6 +93,7 @@
       <span class="pill"><i class="dot" id="live"></i><span id="livetxt">connecting</span></span>
       <span class="pill" id="fps">— fps</span>
       <span class="sp"></span>
+      <button id="mapBtn" class="ghost" style="display:none">3d map</button>
       <button id="drawBtn">draw zone</button>
       <button id="undoBtn" disabled>undo pt</button>
       <button id="doneBtn" disabled>finish zone</button>
@@ -119,6 +102,7 @@
     <div class="view">
       <img id="feed" src="/stream" alt="live camera feed with detection overlay">
       <canvas id="draw"></canvas>
+      <canvas id="map3d"></canvas>
       <div class="hint">click to place points · at least 3 · then finish zone</div>
     </div>
   </div>
@@ -166,8 +150,9 @@
   </aside>
 </div>
 
+<script src="/static/map3d.js"></script>
 <script>
-const COLORS = ['#ffb020','#3fd8e0','#ff6bd6','#4ade80','#c8c832','#9b6bff'];
+const COLORS = ['#6fd6ff','#b48cff','#ffd166','#5eead4','#ff8fab','#a3e635'];
 const img  = document.getElementById('feed');
 const cv   = document.getElementById('draw');
 const ctx  = cv.getContext('2d');
@@ -329,6 +314,7 @@ async function tick(){
     }).join('');
     document.getElementById('zempty').style.display = s.zones.length ? 'none' : 'block';
 
+    lastFindings = s.findings || [];
     const MARK = {high:'!!', medium:'!', low:'', none:'?'};
     document.getElementById('findings').innerHTML = (s.findings || []).map(f =>
       `<div class="find">
@@ -372,13 +358,13 @@ function floorToCanvas(extent, x, y){
 function drawFloor(f){
   const ctx = floorCtx, W = floorCv.width, H = floorCv.height;
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#15151a';
+  ctx.fillStyle = '#0c0f13';
   ctx.fillRect(0, 0, W, H);
 
   const [minX, minY, maxX, maxY] = f.extent;
 
   // Grid in real units, so distance on the plan is readable by eye.
-  ctx.strokeStyle = '#2a2a33';
+  ctx.strokeStyle = '#1a2028';
   ctx.lineWidth = 1;
   for (let x = Math.ceil(minX); x <= maxX; x++){
     const [cx] = floorToCanvas(f.extent, x, 0);
@@ -389,7 +375,7 @@ function drawFloor(f){
     ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
   }
 
-  ctx.strokeStyle = '#4a6b8a';
+  ctx.strokeStyle = 'rgba(111,214,255,.45)';
   ctx.lineWidth = 1.5;
   for (const t of f.trails){
     ctx.beginPath();
@@ -403,8 +389,42 @@ function drawFloor(f){
   for (const p of f.positions){
     const [cx, cy] = floorToCanvas(f.extent, p.x, p.y);
     ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, 7);
-    ctx.fillStyle = '#ffc400'; ctx.fill();
-    ctx.strokeStyle = '#111'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#6fd6ff'; ctx.fill();
+    ctx.strokeStyle = '#07090b'; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+/* ---------- 3D map ---------- */
+/* The same floor positions, standing in the store. Needs a floor calibration;
+   a store map adds the fixtures. One camera here: `openv map3d --live` is the
+   view that joins several. */
+let map3d = null, mapScene = null, lastFindings = [];
+const mapBtn = document.getElementById('mapBtn');
+
+async function loadScene(){
+  try {
+    const scene = await (await fetch('/api/scene')).json();
+    if (!scene.enabled) return;
+    mapScene = scene;
+    mapBtn.style.display = '';
+  } catch (e) { /* no scene, no button */ }
+}
+mapBtn.onclick = () => {
+  const on = !app.classList.contains('mapping');
+  app.classList.toggle('mapping', on);
+  mapBtn.classList.toggle('on', on);
+  if (on && !map3d) map3d = new StoreMap3D(document.getElementById('map3d'), mapScene);
+  if (on) map3d.resize();
+};
+function paintFixtures(findings){
+  // Fixture colour follows the live findings, so the block and the panel
+  // beside it never disagree.
+  if (!mapScene) return;
+  const byZone = Object.fromEntries(findings.map(f => [f.zone, f]));
+  for (const fx of mapScene.fixtures){
+    const f = byZone[fx.zone];
+    fx.severity = f ? f.severity : 'none';
+    fx.readout = f ? `${f.reached} / ${f.passed} REACHED` : 'WATCHING';
   }
 }
 
@@ -419,6 +439,13 @@ async function floorTick(){
     }
     document.getElementById('floorSec').style.display = 'block';
     drawFloor(f);
+    if (map3d && app.classList.contains('mapping')){
+      paintFixtures(lastFindings);
+      map3d.setLive(
+        f.positions.map(p => ({id:p.track_id, tag:'#' + p.track_id, x:p.x, y:p.y, cameras:1})),
+        performance.now() / 1000
+      );
+    }
     const note = document.getElementById('floorNote');
     note.textContent = f.verified
       ? `${f.positions.length} on floor · grid 1${f.units}`
@@ -432,6 +459,7 @@ async function floorTick(){
 // covers first layout, first decoded frame, and window resizes in one path.
 new ResizeObserver(fitCanvas).observe(img);
 loadZones();
+loadScene();
 setInterval(tick, 700);
 tick();
 setInterval(floorTick, 700);
